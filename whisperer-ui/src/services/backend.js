@@ -35,18 +35,28 @@ export async function ingestSources(items) {
   return post('/api/ingest', { items })
 }
 
-export async function createReport({ persona, request, sinceDays = 14, limit = 200 }) {
-  const since = `-${Number(sinceDays)} days`
-  return post('/api/reports', { persona, request, since, limit })
+export async function createReport({ persona, request, startDate, endDate, limit = 200 }) {
+  const payload = { persona, request, limit }
+  if (startDate) payload.startDate = startDate
+  if (endDate) payload.endDate = endDate
+  return post('/api/reports', payload)
 }
 
 export async function finalizeReport({ id, persona, feedback, selectedIds = [] }) {
   return post(`/api/reports/${id}/finalize`, { persona, feedback, selectedSourceIds: selectedIds })
 }
 
-export async function listSources({ sinceDays = 14, limit = 200 } = {}) {
-  const since = `-${Number(sinceDays)} days`
-  return get(`/api/sources?since=${encodeURIComponent(since)}&limit=${encodeURIComponent(limit)}`)
+export async function listSources({ startDate, endDate, sinceDays = 14, limit = 200 } = {}) {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  if (startDate) params.set('start', startDate)
+  if (endDate) params.set('end', endDate)
+  if (!startDate && !endDate) {
+    const since = `-${Number(sinceDays)} days`
+    params.set('since', since)
+  }
+  const query = params.toString()
+  return get(`/api/sources?${query}`)
 }
 
 export async function deleteSource(id) {

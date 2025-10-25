@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
-import { db, upsertSourceStmt, withTransaction, selectRecentSourcesStmt, insertReportStmt, updateReportStmt, selectSourcesByIdsStmt, deleteSourceStmt } from './db.js'
+import { db, upsertSourceStmt, withTransaction, selectRecentSourcesStmt, selectSourcesByDateStmt, insertReportStmt, updateReportStmt, selectSourcesByIdsStmt, deleteSourceStmt } from './db.js'
 import { normalizeUrl, urlFingerprint } from './urlUtils.js'
 import { callClaude } from './anthropic.js'
 
@@ -70,10 +70,16 @@ app.post('/api/ingest', (req, res) => {
   res.json({ ok: true, ...result })
 })
 
-// List recent sources for a date window (e.g., since = '-14 days')
+// List sources for a window (absolute or relative)
 app.get('/api/sources', (req, res) => {
-  const { since = '-14 days', limit = 200 } = req.query
-  const rows = selectRecentSourcesStmt.all({ since: String(since), limit: Number(limit) })
+  const { since = '-14 days', limit = 200, start, end } = req.query
+  const normalizedStart = normalizeDateParam(start, false)
+  const normalizedEnd = normalizeDateParam(end, true)
+
+  const rows = normalizedStart || normalizedEnd
+    ? selectSourcesByDateStmt.all({ start: normalizedStart, end: normalizedEnd, limit: Number(limit) })
+    : selectRecentSourcesStmt.all({ since: String(since), limit: Number(limit) })
+
   res.json({ items: rows })
 })
 
@@ -93,8 +99,13 @@ app.delete('/api/sources/:id', (req, res) => {
 // Create a report: curate -> outline (9 bullets)
 app.post('/api/reports', async (req, res) => {
   try {
-    const { persona = 'Executive', request = '', since = '-14 days', limit = 200 } = req.body || {}
-    const sources = selectRecentSourcesStmt.all({ since: String(since), limit: Number(limit) })
+    const { persona = 'Executive', request = '', since = '-14 days', limit = 200, startDate, endDate } = req.body || {}
+    const normalizedStart = normalizeDateParam(startDate, false)
+    const normalizedEnd = normalizeDateParam(endDate, true)
+
+    const sources = normalizedStart || normalizedEnd
+      ? selectSourcesByDateStmt.all({ start: normalizedStart, end: normalizedEnd, limit: Number(limit) })
+      : selectRecentSourcesStmt.all({ since: String(since), limit: Number(limit) })
     if (!sources.length) return res.status(400).json({ error: 'No sources available to curate' })
 
     // Build curation prompt (indices)
@@ -170,6 +181,18 @@ app.post('/api/reports/:id/finalize', async (req, res) => {
     res.status(500).json({ error: e.message })
   }
 })
+
+function normalizeDateParam(value, endOfDay) {
+  if (!value) return null
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return null
+  if (endOfDay) {
+    parsed.setHours(23, 59, 59, 999)
+  } else {
+    parsed.setHours(0, 0, 0, 0)
+  }
+  return parsed.toISOString()
+}
 
 function truncate(v, n) {
   if (!v) return ''

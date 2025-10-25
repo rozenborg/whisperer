@@ -67,6 +67,25 @@ ORDER BY published_at DESC, id DESC
 LIMIT @limit
 `)
 
+export const selectSourcesByDateStmt = db.prepare(`
+SELECT * FROM sources
+WHERE
+  (
+    @start IS NULL
+    OR published_at IS NULL
+    OR datetime(published_at) >= datetime(@start)
+  )
+  AND (
+    @end IS NULL
+    OR published_at IS NULL
+    OR datetime(published_at) <= datetime(@end)
+  )
+ORDER BY
+  CASE WHEN published_at IS NOT NULL THEN datetime(published_at) ELSE datetime(created_at) END DESC,
+  id DESC
+LIMIT @limit
+`)
+
 export const selectSourcesByIdsStmt = db.prepare(`
 SELECT * FROM sources WHERE id IN (SELECT value FROM json_each(@idsJson))
 `)

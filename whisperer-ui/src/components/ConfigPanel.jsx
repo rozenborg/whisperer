@@ -76,6 +76,31 @@ function ConfigPanel({
           </section>
 
           <section className="config-section">
+            <h3>Time Range</h3>
+            <div className="time-range">
+              <label className="field-group">
+                <span className="field-label">Start date</span>
+                <input
+                  type="date"
+                  value={config.startDate || ''}
+                  onChange={(event) => onConfigChange({ startDate: event.target.value })}
+                />
+              </label>
+              <label className="field-group">
+                <span className="field-label">End date</span>
+                <input
+                  type="date"
+                  value={config.endDate || ''}
+                  onChange={(event) => onConfigChange({ endDate: event.target.value })}
+                />
+              </label>
+            </div>
+            <p className="helper-text">
+              Defaults to the last 7 days. Leave end date empty to include today.
+            </p>
+          </section>
+
+          <section className="config-section">
             <div className="config-section-header">
               <h3>Sources</h3>
               <div className="source-actions">

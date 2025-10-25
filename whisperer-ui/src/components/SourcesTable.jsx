@@ -4,7 +4,6 @@ function SourcesTable({
   progress,
   error,
   errorStage,
-  onFetchSources,
   onUpdateDatabase,
   onRemoveSource,
   isFetching,
@@ -18,16 +17,15 @@ function SourcesTable({
       : `Loaded ${sources.length}`
 
   const statusCopy = {
-    idle: 'Click Fetch Sources to start pulling the latest updates.',
-    fetching: 'Fetching sources. Items will appear here as they load.',
-    fetched: 'Sources fetched. Run AI to curate and build the briefing.',
+    idle: 'Click Add Sources to pull the latest items into your library.',
+    fetching: 'Adding sources. Items will appear here as they load.',
+    fetched: 'Sources updated. Run AI to curate and build the briefing.',
     curating: 'AI is selecting the most relevant sources.',
     generating: 'Building the executive briefing.',
     done: 'Review the selected sources before sending the email.',
   }
 
-  const fetchDisabled = !hasEnabledSource || isFetching || isRunningAi || isIngesting
-  const updateDisabled = fetchDisabled || isIngesting
+  const updateDisabled = !hasEnabledSource || isFetching || isRunningAi || isIngesting
 
   const renderRow = (source) => {
     if (source.error) {
@@ -100,18 +98,10 @@ function SourcesTable({
           <button
             type="button"
             className="primary"
-            onClick={onFetchSources}
-            disabled={fetchDisabled}
-          >
-            {isFetching ? 'Fetching…' : 'Fetch Sources'}
-          </button>
-          <button
-            type="button"
-            className="secondary"
             onClick={onUpdateDatabase}
             disabled={updateDisabled}
           >
-            {isIngesting ? 'Updating…' : 'Update Database'}
+            {isIngesting || isFetching ? 'Adding…' : 'Add Sources'}
           </button>
           <span className="progress-label">{progressLabel}</span>
         </div>

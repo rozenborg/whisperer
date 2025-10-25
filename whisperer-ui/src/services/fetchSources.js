@@ -61,7 +61,8 @@ export const SOURCE_METADATA = {
 }
 
 export async function fetchAllSources(config, callbacks = {}) {
-  const { onBatch, onProgress, onStatus } = callbacks
+  const { onBatch, onProgress, onStatus, dateRange } = callbacks
+  const effectiveRange = normalizeDateRange(dateRange, config)
   const enabledSources = Object.entries(config.sources).filter(
     ([, settings]) => settings.enabled,
   )
@@ -85,7 +86,7 @@ export async function fetchAllSources(config, callbacks = {}) {
       try {
         onStatus?.(`Fetching ${settings.label}...`)
         const batch = await fetchSourceByKey(key, settings, config)
-        const filteredBatch = enforceDateRange(batch, config.dateRange)
+        const filteredBatch = enforceDateRange(batch, effectiveRange)
         aggregated.push(...filteredBatch)
         loadedCount += filteredBatch.length
         if (filteredBatch.length) {
@@ -617,18 +618,40 @@ function formatSlug(slug) {
 }
 
 function enforceDateRange(items, rangeInDays) {
-  if (!rangeInDays || rangeInDays <= 0) {
-    return items
-  }
+  if (!rangeInDays) return items
 
-  const cutoff = Date.now() - rangeInDays * 86400000
+  const { start, end } = rangeInDays
+  const startTime = start ? new Date(start).setHours(0, 0, 0, 0) : null
+  const endTime = end ? new Date(end).setHours(23, 59, 59, 999) : Date.now()
 
   return items.filter((item) => {
     if (!item?.date) return true
     const timestamp = new Date(item.date).getTime()
     if (Number.isNaN(timestamp)) return true
-    return timestamp >= cutoff
+    if (startTime && timestamp < startTime) return false
+    if (timestamp > endTime) return false
+    return true
   })
+}
+
+function normalizeDateRange(range, config) {
+  if (range && range.start && range.end) return range
+
+  const configStart = config?.startDate
+  const configEnd = config?.endDate
+  if (!configStart && !configEnd) {
+    return null
+  }
+
+  const endIso = configEnd || new Date().toISOString().slice(0, 10)
+  let startIso = configStart
+  if (!startIso) {
+    const endDate = new Date(endIso)
+    const fallback = new Date(endDate.getTime() - 6 * 86400000)
+    startIso = fallback.toISOString().slice(0, 10)
+  }
+
+  return { start: startIso, end: endIso }
 }
 
 async function fetchAnthropicNews(maxItems) {

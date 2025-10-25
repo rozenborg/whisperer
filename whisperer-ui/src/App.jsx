@@ -84,10 +84,14 @@ function normalizeStoredSource(item) {
     selected: false,
   }
 }
+const todayIso = new Date().toISOString().slice(0, 10)
+const defaultStartIso = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)
+
 const initialConfig = {
   persona: 'Fortune 100 Executive',
   focusAreas: 'Fintech, Enterprise AI, Regulatory',
-  dateRange: 7,
+  startDate: defaultStartIso,
+  endDate: todayIso,
   podcastProvider: 'itunes',
   sources: {
     techcrunch: { enabled: true, max: 10, label: 'TechCrunch AI (10 items)' },
@@ -123,8 +127,8 @@ const initialConfig = {
 }
 
 const statusLabels = {
-  idle: 'Ready to fetch sources',
-  fetching: 'Fetching sources...',
+  idle: 'Ready to add sources',
+  fetching: 'Adding sources...',
   fetched: 'Sources ready for AI curation.',
   curating: 'AI is curating...',
   generating: 'Generating briefing...',
@@ -158,29 +162,30 @@ function App() {
       if (stored) {
         const parsed = JSON.parse(stored)
         if (parsed && typeof parsed === 'object') {
-          setConfig((previous) => {
-            const nextDateRange = Number(parsed.dateRange)
-            return {
-              ...previous,
-              persona:
-                typeof parsed.persona === 'string' && parsed.persona.trim()
-                  ? parsed.persona
-                  : previous.persona,
-              focusAreas:
-                typeof parsed.focusAreas === 'string' && parsed.focusAreas.trim()
-                  ? parsed.focusAreas
-                  : previous.focusAreas,
-              dateRange:
-                Number.isFinite(nextDateRange) && nextDateRange > 0
-                  ? nextDateRange
-                  : previous.dateRange,
-              podcastProvider: parsed.podcastProvider || previous.podcastProvider,
-              sources: {
-                ...previous.sources,
-                ...(parsed.sources && typeof parsed.sources === 'object' ? parsed.sources : {}),
-              },
-            }
-          })
+          setConfig((previous) => ({
+            ...previous,
+            persona:
+              typeof parsed.persona === 'string' && parsed.persona.trim()
+                ? parsed.persona
+                : previous.persona,
+            focusAreas:
+              typeof parsed.focusAreas === 'string' && parsed.focusAreas.trim()
+                ? parsed.focusAreas
+                : previous.focusAreas,
+            startDate:
+              typeof parsed.startDate === 'string' && parsed.startDate
+                ? parsed.startDate
+                : previous.startDate,
+            endDate:
+              typeof parsed.endDate === 'string'
+                ? parsed.endDate
+                : previous.endDate,
+            podcastProvider: parsed.podcastProvider || previous.podcastProvider,
+            sources: {
+              ...previous.sources,
+              ...(parsed.sources && typeof parsed.sources === 'object' ? parsed.sources : {}),
+            },
+          }))
         }
       } else {
         const legacySources = localStorage.getItem(LEGACY_SOURCE_PERSIST_KEY)
@@ -228,7 +233,8 @@ function App() {
 
     async function loadSavedSources() {
       try {
-        const resp = await listSources({ sinceDays: 365, limit: 500 })
+        const { start, end } = resolveDateRange()
+        const resp = await listSources({ startDate: start, endDate: end, limit: 500 })
         const items = Array.isArray(resp?.items)
           ? resp.items
               .map((entry) => normalizeStoredSource(entry))
@@ -253,7 +259,7 @@ function App() {
     return () => {
       ignore = true
     }
-  }, [])
+  }, [config.startDate, config.endDate])
 
   useEffect(() => {
     if (!isEvidenceOpen) return
@@ -324,6 +330,33 @@ function App() {
     }
   }
 
+  const resolveDateRange = () => {
+    const start = config.startDate
+    const end = config.endDate
+    if (start && end) return { start, end }
+    const endDateObj = end ? new Date(end) : new Date()
+    if (Number.isNaN(endDateObj.getTime())) {
+      const fallback = new Date()
+      const fallbackEnd = fallback.toISOString().slice(0, 10)
+      const fallbackStart = new Date(fallback.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      return { start: fallbackStart, end: fallbackEnd }
+    }
+    const endIso = endDateObj.toISOString().slice(0, 10)
+    let from = start
+      ? start
+      : new Date(endDateObj.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    const startDate = new Date(from)
+    const endDate = new Date(endIso)
+    if (startDate > endDate) {
+      const normalized = endDate.toISOString().slice(0, 10)
+      return { start: normalized, end: normalized }
+    }
+    if (Number.isNaN(startDate.getTime())) {
+      from = new Date(endDate.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    }
+    return { start: from, end: endIso }
+  }
+
   const handleFetchSources = async () => {
     if (!hasEnabledSource || isFetching || isRunningAi) return
 
@@ -338,6 +371,7 @@ function App() {
     setReportMeta(null)
 
     try {
+      const { start, end } = resolveDateRange()
       const allSources = await fetchAllSources(config, {
         onBatch: (batch) => {
           setSources((previous) => {
@@ -351,6 +385,7 @@ function App() {
         },
         onProgress: (nextProgress) => setProgress(nextProgress),
         onStatus: (message) => setStatusMessage(message),
+        dateRange: { start, end },
       })
 
       if (!allSources.length) {
@@ -390,7 +425,7 @@ function App() {
 
     setIsIngesting(true)
     setStatus('fetching')
-    setStatusMessage(`Fetching sources for database update (up to ${MAX_PER_RUN})...`)
+    setStatusMessage(`Adding sources to database (up to ${MAX_PER_RUN})...`)
     setProgress({ loaded: 0, total: 0 })
     setError(null)
     setErrorStage(null)
@@ -399,6 +434,7 @@ function App() {
     setReportMeta(null)
 
     try {
+      const { start, end } = resolveDateRange()
       const allSources = await fetchAllSources(config, {
         onBatch: (batch) => {
           setSources((prev) => {
@@ -412,6 +448,7 @@ function App() {
         },
         onProgress: (p) => setProgress(p),
         onStatus: (m) => setStatusMessage(m),
+        dateRange: { start, end },
       })
 
       const successful = allSources.filter((i) => !i.error)
@@ -491,7 +528,8 @@ function App() {
     setOutline(null)
     setBriefing(null)
     try {
-      const resp = await createReport({ persona: config.persona, request: config.focusAreas, sinceDays: config.dateRange, limit: MAX_PER_RUN })
+      const { start, end } = resolveDateRange()
+      const resp = await createReport({ persona: config.persona, request: config.focusAreas, startDate: start, endDate: end, limit: MAX_PER_RUN })
       if (!resp?.ok) throw new Error('Report creation failed')
       setOutline({ items: resp.outline, reasoning: resp.reasoning })
       setReportMeta({ id: resp.id, selectedUrls: resp.selectedUrls || [], selectedIds: resp.selectedIds || [] })
@@ -537,7 +575,7 @@ function App() {
 
     const successfulSources = sources.filter((item) => !item.error)
     if (!successfulSources.length) {
-      setError('Fetch sources before running AI curation.')
+      setError('Add sources before running AI curation.')
       setErrorStage('fetch')
       return
     }
@@ -612,6 +650,7 @@ function App() {
   )
   const totalSourceCount = displayedSources.filter((s) => !s.error).length
   const selectedCount = evidenceSources.length
+  const resolvedDateRange = useMemo(() => resolveDateRange(), [config.startDate, config.endDate])
 
   const formattedEmail = briefing ? formatEmailHtml(config, briefing) : ''
 
@@ -713,23 +752,6 @@ function App() {
                         placeholder="Topics, key questions, or priorities for this briefing."
                       />
                     </label>
-
-                    <label className="field-group inline">
-                      <span className="field-label">Lookback window</span>
-                      <div className="inline-input">
-                        <input
-                          type="number"
-                          min={1}
-                          value={config.dateRange}
-                          onChange={(event) => {
-                            const next = Number(event.target.value)
-                            handleConfigChange({ dateRange: Number.isFinite(next) && next > 0 ? next : 1 })
-                          }}
-                          aria-label="Date range in days"
-                        />
-                        <span className="suffix">days</span>
-                      </div>
-                    </label>
                   </div>
                   <div className="panel-footer compose-actions">
                     <div className="button-group">
@@ -765,7 +787,7 @@ function App() {
                         onClick={handleIngestToLibrary}
                         disabled={!hasEnabledSource || isFetching || isRunningAi || isIngesting}
                       >
-                        {isIngesting ? 'Updating…' : 'Update Database'}
+                        {isIngesting ? 'Adding…' : 'Add Sources'}
                       </button>
                     </div>
                   </div>
@@ -779,6 +801,11 @@ function App() {
                       <span>{progress.loaded}/{progress.total} items processed</span>
                     )}
                     <span>{selectedCount} selected for outline</span>
+                    {resolvedDateRange && (
+                      <span>
+                        Window: {resolvedDateRange.start} → {resolvedDateRange.end}
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -826,7 +853,6 @@ function App() {
                 progress={progress}
                 error={error}
                 errorStage={errorStage}
-                onFetchSources={handleFetchSources}
                 onUpdateDatabase={handleIngestToLibrary}
                 onRemoveSource={handleRemoveSource}
                 isFetching={isFetching}
