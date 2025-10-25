@@ -46,6 +46,25 @@ export async function createReport({ prompt, startDate, endDate, limit = 200 }) 
   return post('/api/reports', payload)
 }
 
+// Briefings (one-pass)
+export async function createBriefing({ prompt, startDate, endDate, limit = 200 }) {
+  const payload = { prompt, request: prompt, limit }
+  if (startDate) payload.startDate = startDate
+  if (endDate) payload.endDate = endDate
+  return post('/api/briefings', payload)
+}
+
+export async function reviseBriefing({ id, prompt, feedback, selectedIds = [], pinnedPoints = [], droppedUrls = [], keepPinned = true }) {
+  return post(`/api/briefings/${id}/revise`, {
+    prompt,
+    feedback,
+    selectedSourceIds: selectedIds,
+    pinnedPoints,
+    droppedUrls,
+    keepPinned,
+  })
+}
+
 export async function finalizeReport({ id, prompt, feedback, selectedIds = [] }) {
   return post(`/api/reports/${id}/finalize`, {
     prompt,

@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ConfigPanel from './components/ConfigPanel.jsx'
 import SourcesTable from './components/SourcesTable.jsx'
 import EmailPreview from './components/EmailPreview.jsx'
-import OutlinePanel from './components/OutlinePanel.jsx'
+import FeedbackPanel from './components/FeedbackPanel.jsx'
 import EvidenceDrawer from './components/EvidenceDrawer.jsx'
 import { fetchAllSources } from './services/fetchSources.js'
-import { curateWithClaude, generateBriefing } from './services/claudeAPI.js'
 import { formatEmailHtml } from './services/emailFormatter.js'
-import { ingestSources as ingestToBackend, createReport, finalizeReport, listSources, deleteSource as deleteSourceFromBackend } from './services/backend.js'
+import { ingestSources as ingestToBackend, listSources, deleteSource as deleteSourceFromBackend, createBriefing, reviseBriefing } from './services/backend.js'
 
 const MAX_PER_RUN = Number(import.meta.env.VITE_MAX_SOURCES_PER_RUN || 42)
 const CONFIG_PERSIST_KEY = 'whisperer-config-v2'
 const LEGACY_SOURCE_PERSIST_KEY = 'whisperer-source-selection'
+const COMPOSE_LAYOUT_KEY = 'whisperer-compose-left-percent'
 function mergeSourceLists(existing, incoming) {
   const map = new Map()
 
@@ -121,9 +121,8 @@ const initialConfig = {
 const statusLabels = {
   idle: 'Ready to add sources',
   fetching: 'Adding sources...',
-  fetched: 'Outline ready for review.',
-  curating: 'AI is curating...',
-  generating: 'Generating briefing...',
+  curating: 'Selecting top sources…',
+  generating: 'Composing executive talking points…',
   done: 'Briefing ready to send',
 }
 
@@ -134,19 +133,101 @@ function App() {
   const [progress, setProgress] = useState({ loaded: 0, total: 0 })
   const [sources, setSources] = useState([])
   const [briefing, setBriefing] = useState(null)
-  const [outline, setOutline] = useState(null)
-  const [reportMeta, setReportMeta] = useState(null) // { id, selectedUrls }
+  const [reportMeta, setReportMeta] = useState(null) // { id, selectedUrls, selectedIds }
   const [error, setError] = useState(null)
   const [errorStage, setErrorStage] = useState(null)
   const [isFetching, setIsFetching] = useState(false)
-  const [isRunningAi, setIsRunningAi] = useState(false)
   const [isIngesting, setIsIngesting] = useState(false)
-  const [isCreatingReport, setIsCreatingReport] = useState(false)
-  const [isFinalizing, setIsFinalizing] = useState(false)
+  const [isCreatingBriefing, setIsCreatingBriefing] = useState(false)
+  const [isRevisingBriefing, setIsRevisingBriefing] = useState(false)
   const [isConfigCollapsed, setIsConfigCollapsed] = useState(true)
   const [configSaveMessage, setConfigSaveMessage] = useState('')
   const [activeView, setActiveView] = useState('compose')
   const [isEvidenceOpen, setIsEvidenceOpen] = useState(false)
+  const [leftPanePercent, setLeftPanePercent] = useState(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = Number.parseFloat(window.localStorage.getItem(COMPOSE_LAYOUT_KEY) || '')
+        if (!Number.isNaN(stored) && stored >= 0.2 && stored <= 0.7) {
+          return stored
+        }
+      } catch {
+        // ignore storage read errors
+      }
+    }
+    return 0.34
+  })
+  const [isResizing, setIsResizing] = useState(false)
+  const composeLayoutRef = useRef(null)
+  const isResizingRef = useRef(false)
+  const updatePaneFromClientX = useCallback((clientX) => {
+    if (!composeLayoutRef.current || typeof clientX !== 'number') return
+    const rect = composeLayoutRef.current.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return
+    const raw = (clientX - rect.left) / rect.width
+    const clamped = Math.min(0.7, Math.max(0.2, raw))
+    setLeftPanePercent(clamped)
+  }, [])
+
+  const handleResizeStart = useCallback((event) => {
+    if (!composeLayoutRef.current) return
+    event.preventDefault()
+    isResizingRef.current = true
+    setIsResizing(true)
+    if (typeof document !== 'undefined') {
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'col-resize'
+    }
+    const clientX = 'touches' in event ? event.touches?.[0]?.clientX : event.clientX
+    if (typeof clientX === 'number') {
+      updatePaneFromClientX(clientX)
+    }
+  }, [updatePaneFromClientX])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    try {
+      window.localStorage.setItem(COMPOSE_LAYOUT_KEY, leftPanePercent.toFixed(4))
+    } catch {
+      /* ignore storage failures */
+    }
+    return undefined
+  }, [leftPanePercent])
+
+  useEffect(() => {
+    const handleMove = (event) => {
+      if (!isResizingRef.current) return
+      const clientX = 'touches' in event ? event.touches?.[0]?.clientX : event.clientX
+      if (typeof clientX !== 'number') return
+      if ('touches' in event && event.cancelable) event.preventDefault()
+      updatePaneFromClientX(clientX)
+    }
+
+    const stopResize = () => {
+      if (!isResizingRef.current) return
+      isResizingRef.current = false
+      setIsResizing(false)
+      if (typeof document !== 'undefined') {
+        document.body.style.userSelect = ''
+        document.body.style.cursor = ''
+      }
+    }
+
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('touchmove', handleMove, { passive: false })
+    window.addEventListener('mouseup', stopResize)
+    window.addEventListener('touchend', stopResize)
+    window.addEventListener('touchcancel', stopResize)
+
+    return () => {
+      stopResize()
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('touchmove', handleMove)
+      window.removeEventListener('mouseup', stopResize)
+      window.removeEventListener('touchend', stopResize)
+      window.removeEventListener('touchcancel', stopResize)
+    }
+  }, [updatePaneFromClientX])
 
   useEffect(() => {
     try {
@@ -255,6 +336,8 @@ function App() {
     if (!hasSelected) setIsEvidenceOpen(false)
   }, [isEvidenceOpen, sources])
 
+  const isAiBusy = isCreatingBriefing || isRevisingBriefing
+
   const hasEnabledSource = useMemo(
     () => Object.values(config.sources).some((source) => source.enabled),
     [config.sources],
@@ -346,7 +429,7 @@ function App() {
   }
 
   const handleFetchSources = async () => {
-    if (!hasEnabledSource || isFetching || isRunningAi) return
+    if (!hasEnabledSource || isFetching || isAiBusy) return
 
     setIsFetching(true)
     setStatus('fetching')
@@ -355,7 +438,6 @@ function App() {
     setError(null)
     setErrorStage(null)
     setBriefing(null)
-    setOutline(null)
     setReportMeta(null)
 
     try {
@@ -394,8 +476,8 @@ function App() {
       if (mergedList) {
         setProgress({ loaded: mergedList.length, total: mergedList.length })
       }
-      setStatus('fetched')
-      setStatusMessage(statusLabels.fetched)
+      setStatus('idle')
+      setStatusMessage('Sources loaded. Generate talking points when ready.')
       setErrorStage(null)
     } catch (caught) {
       console.error(caught)
@@ -409,7 +491,7 @@ function App() {
   }
 
   const handleIngestToLibrary = async () => {
-    if (!hasEnabledSource || isFetching || isRunningAi || isIngesting) return
+    if (!hasEnabledSource || isFetching || isAiBusy || isIngesting) return
 
     setIsIngesting(true)
     setStatus('fetching')
@@ -418,7 +500,6 @@ function App() {
     setError(null)
     setErrorStage(null)
     setBriefing(null)
-    setOutline(null)
     setReportMeta(null)
 
     try {
@@ -454,7 +535,7 @@ function App() {
       if (mergedList) {
         setProgress({ loaded: mergedList.length, total: mergedList.length })
       }
-      setStatus('fetched')
+      setStatus('idle')
       setStatusMessage(`Database updated (${result.inserted} items upserted; cap ${MAX_PER_RUN}).`)
     } catch (e) {
       console.error(e)
@@ -492,7 +573,7 @@ function App() {
         }
       })
       if (selectedCount && source.selected) {
-        setStatusMessage('Source removed from outline and database.')
+        setStatusMessage('Source removed from briefing and database.')
       }
     } catch (err) {
       console.error(err)
@@ -506,123 +587,62 @@ function App() {
     setActiveView(view)
   }
 
-  const handleCreateReport = async () => {
-    if (isCreatingReport || isFetching || isRunningAi) return
-    setIsCreatingReport(true)
+  // New: create briefing in one pass
+  const handleCreateBriefing = async () => {
+    if (isAiBusy || isFetching) return
+    setIsCreatingBriefing(true)
     setError(null)
     setErrorStage(null)
-    setStatus('curating')
-    setStatusMessage('Curating and drafting outline...')
-    setOutline(null)
+    setStatus('generating')
+    setStatusMessage('Selecting and composing talking points…')
     setBriefing(null)
+    setReportMeta(null)
     try {
       const { start, end } = resolveDateRange()
-      const resp = await createReport({ prompt: config.prompt, startDate: start, endDate: end, limit: MAX_PER_RUN })
-      if (!resp?.ok) throw new Error('Report creation failed')
-      setOutline({ items: resp.outline, reasoning: resp.reasoning })
+      const resp = await createBriefing({ prompt: config.prompt, startDate: start, endDate: end, limit: MAX_PER_RUN })
+      if (!resp?.ok) throw new Error('Briefing creation failed')
+      setBriefing(resp.briefing)
       setReportMeta({ id: resp.id, selectedUrls: resp.selectedUrls || [], selectedIds: resp.selectedIds || [] })
-      setStatus('fetched')
-      setStatusMessage('Outline ready. Review and provide feedback.')
-    } catch (e) {
-      console.error(e)
-      setError(e.message || 'Report creation failed')
-      setErrorStage('report')
-      setStatus('idle')
-      setStatusMessage('Report step failed. Try again.')
-    } finally {
-      setIsCreatingReport(false)
-    }
-  }
 
-  const handleFinalizeReport = async (feedbackText) => {
-    if (!reportMeta?.id || isFinalizing) return
-    setIsFinalizing(true)
-    setStatus('generating')
-    setStatusMessage('Generating talking points...')
-    setError(null)
-    setErrorStage(null)
-    try {
-      const resp = await finalizeReport({ id: reportMeta.id, prompt: config.prompt, feedback: feedbackText, selectedIds: reportMeta?.selectedIds || [] })
-      if (!resp?.ok) throw new Error('Finalize failed')
-      setBriefing({ ...resp.briefing, generatedAt: new Date().toISOString(), reasoning: outline?.reasoning })
+      // Mark selections for evidence drawer
+      const selectedSet = new Set(resp.selectedUrls || [])
+      setSources((prev) => prev.map((s) => ({ ...s, selected: selectedSet.has(s.url) })))
+
       setStatus('done')
       setStatusMessage('Briefing ready to send')
     } catch (e) {
       console.error(e)
-      setError(e.message || 'Finalize failed')
-      setErrorStage('finalize')
-      setStatus('fetched')
-      setStatusMessage('Finalize failed. Update feedback and retry.')
+      setError(e.message || 'Briefing creation failed')
+      setErrorStage('briefing')
+      setStatus('idle')
+      setStatusMessage('Creation failed. Adjust prompt/date window and retry.')
     } finally {
-      setIsFinalizing(false)
+      setIsCreatingBriefing(false)
     }
   }
 
-  const handleGenerateBriefing = async () => {
-    if (isRunningAi || isFetching) return
-
-    const successfulSources = sources.filter((item) => !item.error)
-    if (!successfulSources.length) {
-      setError('Add sources before running AI curation.')
-      setErrorStage('fetch')
-      return
-    }
-
-    setIsRunningAi(true)
-    setStatus('curating')
-    setStatusMessage(statusLabels.curating)
+  // New: revise with feedback
+  const handleReviseBriefing = async ({ feedback, pinnedPoints = [], droppedUrls = [] }) => {
+    if (!reportMeta?.id || isRevisingBriefing) return
+    setIsRevisingBriefing(true)
+    setStatus('generating')
+    setStatusMessage('Regenerating with feedback…')
     setError(null)
     setErrorStage(null)
-
     try {
-      const { selectedIds, reasoning } = await curateWithClaude(successfulSources, {
-        config,
-      })
-
-      const curatedSources = sources.map((source) => ({
-        ...source,
-        selected: selectedIds.includes(source.id),
-      }))
-      setSources(curatedSources)
-
-      if (!selectedIds.length) {
-        setStatus('fetched')
-        setStatusMessage('AI did not select any sources. Review fetched items.')
-        setBriefing({
-          summary:
-            'AI did not select any sources. Review the fetched items and adjust the configuration before retrying.',
-          points: [],
-          generatedAt: new Date().toISOString(),
-          reasoning,
-        })
-        return
-      }
-
-      setStatus('generating')
-      setStatusMessage(statusLabels.generating)
-
-      const selectedSources = curatedSources.filter(
-        (item) => item.selected && !item.error,
-      )
-
-      const briefingPayload = await generateBriefing({
-        selectedSources,
-        config,
-        reasoning,
-      })
-
-      setBriefing(briefingPayload)
+      const resp = await reviseBriefing({ id: reportMeta.id, prompt: config.prompt, feedback, selectedIds: reportMeta?.selectedIds || [], pinnedPoints, droppedUrls, keepPinned: true })
+      if (!resp?.ok) throw new Error('Revision failed')
+      setBriefing({ ...resp.briefing, generatedAt: new Date().toISOString(), reasoning: briefing?.reasoning })
       setStatus('done')
-      setStatusMessage(statusLabels.done)
-      setErrorStage(null)
-    } catch (caught) {
-      console.error(caught)
-      setError(formatAiError(caught))
-      setErrorStage('ai')
-      setStatus('fetched')
-      setStatusMessage('AI step failed. Review the message below and run Generate again.')
+      setStatusMessage('Briefing updated')
+    } catch (e) {
+      console.error(e)
+      setError(e.message || 'Revision failed')
+      setErrorStage('revise')
+      setStatus('done')
+      setStatusMessage('Revision failed. Update feedback and retry.')
     } finally {
-      setIsRunningAi(false)
+      setIsRevisingBriefing(false)
     }
   }
 
@@ -641,25 +661,15 @@ function App() {
   const resolvedDateRange = useMemo(() => resolveDateRange(), [config.startDate, config.endDate])
 
   const formattedEmail = briefing ? formatEmailHtml(config, briefing) : ''
-
-  function formatAiError(caught) {
-    const baseMessage = caught?.message || 'Unexpected error during AI generation.'
-
-    if (/invalid\s+x-api-key/i.test(baseMessage)) {
-      return `${baseMessage}. Double-check ANTHROPIC_API_KEY in your environment, then restart the dev server.`
-    }
-
-    if (/401/.test(baseMessage)) {
-      return `${baseMessage}. The Anthropic API rejected the credentials. Refresh your key and try again.`
-    }
-
-    if (/429/.test(baseMessage)) {
-      return `${baseMessage}. Anthropic is rate limiting requests—wait a few seconds before retrying.`
-    }
-
-    return `${baseMessage} Review your Anthropic configuration and retry.`
-  }
-
+  const leftPaneStyle = useMemo(() => ({
+    flex: `0 0 ${(leftPanePercent * 100).toFixed(1)}%`,
+    minWidth: 260,
+    maxWidth: '640px',
+  }), [leftPanePercent])
+  const rightPaneStyle = useMemo(() => ({
+    flex: '1 1 auto',
+    minWidth: 420,
+  }), [])
   const handleOpenEvidence = () => {
     if (selectedCount > 0) setIsEvidenceOpen(true)
   }
@@ -703,13 +713,13 @@ function App() {
       <main className={`app-main view-${activeView}${isConfigCollapsed ? ' config-collapsed' : ''}`}>
         <section className="workspace-column">
           {isComposeView ? (
-            <div className="compose-layout">
-              <div className="compose-main">
+            <div className="compose-layout" ref={composeLayoutRef}>
+              <div className="compose-main" style={leftPaneStyle} id="compose-controls-pane">
                 <div className="panel compose-card">
                   <div className="panel-header">
                     <div>
                       <h2>Compose Briefing</h2>
-                      <p>Write a single prompt for the briefing, then generate an outline.</p>
+                      <p>Write a single prompt, then generate talking points.</p>
                     </div>
                   </div>
                   <div className="panel-body">
@@ -729,18 +739,10 @@ function App() {
                       <button
                         type="button"
                         className="primary"
-                        onClick={handleCreateReport}
-                        disabled={isCreatingReport || isRunningAi}
+                        onClick={handleCreateBriefing}
+                        disabled={!canGenerateBriefing || isCreatingBriefing}
                       >
-                        {isCreatingReport ? 'Drafting Outline…' : 'Generate Outline'}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={handleGenerateBriefing}
-                        disabled={!canGenerateBriefing || isRunningAi}
-                      >
-                        {isRunningAi ? 'Running AI…' : 'Generate Briefing'}
+                        {isCreatingBriefing ? 'Generating…' : 'Generate Talking Points'}
                       </button>
                     </div>
                   </div>
@@ -749,7 +751,7 @@ function App() {
                     {progress.total > 0 && (
                       <span>{progress.loaded}/{progress.total} items processed</span>
                     )}
-                    <span>{selectedCount} selected for outline</span>
+                    <span>{selectedCount} selected for evidence</span>
                     {resolvedDateRange && (
                       <span>
                         Window: {resolvedDateRange.start} → {resolvedDateRange.end}
@@ -757,18 +759,29 @@ function App() {
                     )}
                   </div>
                 </div>
-
-                <OutlinePanel
-                  outline={outline?.items}
-                  reasoning={outline?.reasoning}
-                  onFinalize={handleFinalizeReport}
-                  isFinalizing={isFinalizing}
-                  disabled={!outline?.items}
+                <FeedbackPanel
+                  briefing={briefing}
+                  onRegenerate={handleReviseBriefing}
+                  isRegenerating={isRevisingBriefing}
                   onOpenEvidence={handleOpenEvidence}
                   selectedCount={selectedCount}
                 />
               </div>
-              <div className="compose-side">
+              <div
+                className={`compose-resize-handle${isResizing ? ' is-active' : ''}`}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize briefing panels"
+                aria-valuemin={20}
+                aria-valuemax={70}
+                aria-valuenow={Math.round(leftPanePercent * 100)}
+                aria-controls="compose-controls-pane compose-preview-pane"
+                onMouseDown={handleResizeStart}
+                onTouchStart={handleResizeStart}
+              >
+                <span className="sr-only">Drag to resize briefing panels</span>
+              </div>
+              <div className="compose-side" style={rightPaneStyle} id="compose-preview-pane">
                 <EmailPreview
                   briefing={briefing}
                   htmlContent={formattedEmail}
@@ -783,12 +796,7 @@ function App() {
                       <strong>{errorStage ? `${errorStage} error:` : 'Error:'}</strong> {error}
                     </div>
                   )}
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={handleOpenEvidence}
-                    disabled={!selectedCount}
-                  >
+                  <button type="button" className="secondary" onClick={handleOpenEvidence} disabled={!selectedCount}>
                     View Evidence ({selectedCount})
                   </button>
                 </div>
@@ -806,7 +814,7 @@ function App() {
                 onRemoveSource={handleRemoveSource}
                 isFetching={isFetching}
                 isIngesting={isIngesting}
-                isRunningAi={isRunningAi}
+                isRunningAi={isAiBusy}
                 hasEnabledSource={hasEnabledSource}
               />
             </div>
@@ -828,7 +836,7 @@ function App() {
         open={isComposeView && isEvidenceOpen}
         onClose={handleCloseEvidence}
         sources={evidenceSources}
-        statusMessage={`${selectedCount} source${selectedCount === 1 ? '' : 's'} supporting this outline.`}
+        statusMessage={`${selectedCount} source${selectedCount === 1 ? '' : 's'} supporting these talking points.`}
       />
     </div>
   )

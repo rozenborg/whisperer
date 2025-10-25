@@ -6,11 +6,11 @@ Whisperer is a two-part app: a React front end for composing executive briefings
 1. Open the UI and (optionally) tweak settings via the right-hand gear drawer.
 2. Hit **Add Sources** from the Sources tab to ingest new articles/podcasts for the chosen date range.
 3. Review/delete sources in the Sources tab as needed.
-4. In Compose, write the briefing prompt and click **Generate Outline**.
-5. Review the AI outline, inspect supporting evidence, provide feedback.
-6. Generate talking points — the email preview updates live.
+4. In Compose, write the briefing prompt and click **Generate Talking Points**.
+5. Review the AI-generated briefing, inspect supporting evidence, and optionally pin/exclude bullets.
+6. Provide feedback, regenerate if needed, then copy/send the final email.
 
-The flow is optimized around “write a one-line prompt → get an outline → quickly refine → produce an email.”
+The flow is optimized around “write a one-line prompt → receive talking points → iterate with feedback → produce an email executives value.”
 
 ---
 
@@ -18,7 +18,7 @@ The flow is optimized around “write a one-line prompt → get an outline → q
 
 ### Global Layout
 - **Top bar:** Whisperer title, view tabs (Compose / Sources), gear icon (opens the settings drawer). Settings are hidden by default.
-- **Compose view:** split into a main column (prompt + outline) and a side column (email preview + workflow status + evidence button).
+- **Compose view:** resizable two-column layout — the left column holds the compose prompt and feedback controls, the right column shows the email preview, status, and evidence controls.
 - **Sources view:** single table page showing everything currently in the DB.
 
 ### Settings Drawer (right slide-out)
@@ -27,16 +27,17 @@ The flow is optimized around “write a one-line prompt → get an outline → q
 - **Sources:** checkboxes grouped by Podcasts, News & Research, and Web Searches (Tavily lives here and is disabled by default).
 - **Save button:** persists settings to `localStorage` (`Saved!` feedback on success).
 
-### Compose Card
+### Compose + Feedback Column (left)
 - Single textarea prompt field (Briefing Prompt) for persona, instructions, and focus.
-- Buttons
-  - **Generate Outline** – calls the backend report endpoint using the selected date window.
-  - **Generate Briefing** – runs the end-to-end flow using whatever sources are already in the table.
-- Summary chips (total sources, processed count, selections, active date window).
+- Primary button: **Generate Talking Points** (calls the one-pass briefing endpoint for the current date range).
+- Summary chips show total sources fetched, processed count, selected evidence count, and active date window.
+- Feedback panel lists the current talking points with controls to **Pin** or **Exclude** individual bullets before regeneration.
+- Feedback textarea + **Regenerate with Feedback** button send tone/focus adjustments back to the AI while respecting pinned/excluded items.
+- Evidence button exposes the cited sources drawer; quick link duplicated in the status panel.
 
-### Outline + Evidence
-- Outline panel shows bullets and a “View Sources” button (opens the evidence drawer with per-bullet citations).
-- Feedback textarea drives the “Generate Talking Points” call.
+### Email Preview Column (right)
+- **Email Preview** renders the executive-ready briefing (summary + bullets + rationale) and provides a copy action.
+- **Workflow Status** panel mirrors current step (idle, fetching, generating, done), surfaces errors, and links to evidence.
 
 ### Sources Tab
 - **Add Sources** (primary button): fetches new items and upserts them into SQLite (cap of `MAX_SOURCES_PER_RUN`, default 42).
@@ -60,13 +61,13 @@ The flow is optimized around “write a one-line prompt → get an outline → q
 ---
 
 ## AI Workflow
-1. **Outline generation** (`POST /api/reports`)
+1. **Briefing generation** (`POST /api/briefings`)
    - Pulls sources limited by the active date range or a relative fallback (`since = '-14 days'`).
-   - Claude first selects the most relevant items, then drafts a 9-bullet outline.
-   - Outline + reasoning stored in `reports` table; UI stores `reportMeta` (ids & URLs).
-2. **Talking points** (`POST /api/reports/:id/finalize`)
-   - Uses selected source IDs + user feedback to produce summary and detailed bullets.
-   - Email preview renders the JSON response along with citations.
+   - Claude curates the most relevant items and immediately produces executive-ready talking points.
+   - Final JSON (summary + points) is stored in the `reports` table; response returns selected source IDs/URLs for evidence.
+2. **Regeneration with feedback** (`POST /api/briefings/:id/revise`)
+   - Accepts freeform feedback plus optional pinned points and excluded URLs.
+   - Claude rewrites the summary/points while keeping pinned items intact and omitting exclusions.
 
 Evidence drawer shows all sources flagged as selected — opening it does not trigger additional API calls.
 
@@ -78,8 +79,9 @@ Evidence drawer shows all sources flagged as selected — opening it does not tr
   - `POST /api/ingest` – ingest batch, returns inserted count.
   - `GET /api/sources` – accepts `start`, `end`, or `since` + `limit`.
   - `DELETE /api/sources/:id` – removes a row.
-  - `POST /api/reports` – outline creation (supports absolute date range).
-  - `POST /api/reports/:id/finalize` – final talking points.
+  - `POST /api/briefings` – curate sources + generate talking points in one pass.
+  - `POST /api/briefings/:id/revise` – regenerate talking points using feedback, pins, and exclusions.
+  - (Legacy) `POST /api/reports` / `POST /api/reports/:id/finalize` remain for the outline-first flow if needed.
 - History: date filtering handled in SQL via `selectSourcesByDateStmt` when explicit start/end provided.
 
 ---

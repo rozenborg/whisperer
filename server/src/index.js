@@ -96,6 +96,132 @@ app.delete('/api/sources/:id', (req, res) => {
   }
 })
 
+// New: One-pass briefing creation (curate -> talking points)
+app.post('/api/briefings', async (req, res) => {
+  try {
+    const {
+      persona: rawPersona,
+      prompt = '',
+      request = '',
+      since = '-14 days',
+      limit = 200,
+      startDate,
+      endDate,
+    } = req.body || {}
+
+    const persona = typeof rawPersona === 'string' && rawPersona.trim() ? rawPersona.trim() : null
+    const userPrompt = typeof prompt === 'string' && prompt.trim()
+      ? prompt.trim()
+      : (typeof request === 'string' && request.trim() ? request.trim() : '')
+    const promptCopy = userPrompt || 'No additional guidance provided.'
+    const normalizedStart = normalizeDateParam(startDate, false)
+    const normalizedEnd = normalizeDateParam(endDate, true)
+
+    const sources = normalizedStart || normalizedEnd
+      ? selectSourcesByDateStmt.all({ start: normalizedStart, end: normalizedEnd, limit: Number(limit) })
+      : selectRecentSourcesStmt.all({ since: String(since), limit: Number(limit) })
+    if (!sources.length) return res.status(400).json({ error: 'No sources available to curate' })
+
+    // Build curation prompt (indices)
+    const list = sources
+      .map((s, i) => `${i}. ${s.title || 'Untitled'} (${s.source || 'Unknown'}) — ${truncate(s.description, 400)}`)
+      .join('\n')
+    const curationPrompt = `You are curating AI developments for an executive briefing.\n\nAudience: Fortune 100 executives.\n\nUser prompt:\n${promptCopy}\n\nSources:\n${list}\n\nSelect 5-10 most strategically relevant items. Return ONLY JSON:\n{ "selected": [0,2], "reasoning": "brief why" }`
+    const curationText = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: curationPrompt }] }] })
+    const curation = extractJson(curationText)
+    const selectedIndices = normalizeSelectedIndices(curation)
+
+    const fallbackIndices = sources.slice(0, Math.min(6, sources.length)).map((_, i) => i)
+    const indicesToUse = (selectedIndices.length ? selectedIndices : fallbackIndices)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value < sources.length)
+
+    const selected = indicesToUse
+      .map((i) => sources[i])
+      .filter(Boolean)
+
+    // Compose executive-ready talking points from selected sources
+    const selectedList = selected
+      .map((s, i) => `${i + 1}. ${s.title} — ${truncate(s.description, 800)}`)
+      .join('\n')
+    const tpPrompt = `You are generating an executive-ready AI briefing email.\n\nAudience: Fortune 100 executives.\nStyle: crisp, factual, quantify when possible, no hype, highlight risks/compliance and competitive moves.\n\nUser prompt:\n${promptCopy}\n\nSelected sources:\n${selectedList}\n\nReturn ONLY JSON:\n{ "summary": "1-2 sentences", "points": [{"title":"...","url":"...","type":"Article|Podcast|Research","insight":"2-3 sentences: key takeaway","implication":"2-3 sentences: what this means for execs"}] }`
+    const tpText = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: tpPrompt }] }] })
+    const json = extractJson(tpText)
+    if (!json?.summary || !Array.isArray(json.points)) return res.status(502).json({ error: 'Invalid briefing response' })
+
+    const record = {
+      persona,
+      request: userPrompt,
+      reasoning: curation?.reasoning || '',
+      outline_json: null,
+      final_points_json: JSON.stringify(json),
+    }
+    const info = insertReportStmt.run(record)
+
+    const briefing = { ...json, generatedAt: new Date().toISOString(), reasoning: record.reasoning }
+    return res.json({ ok: true, id: info.lastInsertRowid, briefing, selectedIds: selected.map((s) => s.id), selectedUrls: selected.map((s) => s.url) })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// New: Revise an existing briefing with feedback and optional pins/exclusions
+app.post('/api/briefings/:id/revise', async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    const {
+      prompt = '',
+      feedback = '',
+      selectedSourceIds = [],
+      pinnedPoints = [],
+      droppedUrls = [],
+      keepPinned = true,
+    } = req.body || {}
+
+    if (!Array.isArray(selectedSourceIds) || selectedSourceIds.length === 0) {
+      return res.status(400).json({ error: 'selectedSourceIds required for revision' })
+    }
+
+    const userPrompt = typeof prompt === 'string' && prompt.trim() ? prompt.trim() : ''
+    const promptCopy = userPrompt || 'No additional guidance provided.'
+    const feedbackCopy = typeof feedback === 'string' && feedback.trim() ? feedback.trim() : 'none'
+
+    const idsJson = JSON.stringify(selectedSourceIds.map(Number).filter(Boolean))
+    const sources = selectSourcesByIdsStmt.all({ idsJson })
+
+    const list = sources
+      .map((s, i) => `${i + 1}. ${s.title} — ${truncate(s.description, 800)}`)
+      .join('\n')
+
+    const pinnedJson = Array.isArray(pinnedPoints) && pinnedPoints.length
+      ? JSON.stringify(pinnedPoints)
+      : '[]'
+    const droppedList = Array.isArray(droppedUrls) && droppedUrls.length
+      ? droppedUrls.map((u) => `- ${u}`).join('\n')
+      : '(none)'
+
+    const revisePrompt = `You are revising an executive AI briefing.\n\nAudience: Fortune 100 executives. Style: crisp, factual, quantify where possible, no hype.\n\nUser prompt:\n${promptCopy}\n\nUser feedback:\n${feedbackCopy}\n\nSelected sources:\n${list}\n\nPinned points (JSON array)${keepPinned ? ' — keep these verbatim at the top' : ''}:\n${pinnedJson}\n\nExclude any points based on these URLs:\n${droppedList}\n\nReturn ONLY JSON:\n{ "summary": "1-2 sentences", "points": [{"title":"...","url":"...","type":"Article|Podcast|Research","insight":"...","implication":"..."}] }`
+
+    const text = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: revisePrompt }] }] })
+    const json = extractJson(text)
+    if (!json?.summary || !Array.isArray(json.points)) return res.status(502).json({ error: 'Invalid briefing response' })
+
+    // Merge pinned points if requested, filter out dropped/duplicates by url
+    const droppedSet = new Set((Array.isArray(droppedUrls) ? droppedUrls : []).map(String))
+    const pinned = keepPinned && Array.isArray(pinnedPoints) ? pinnedPoints.filter((p) => p && p.url && !droppedSet.has(String(p.url))) : []
+    const pinnedUrls = new Set(pinned.map((p) => String(p.url)))
+    const newPoints = json.points.filter((p) => p && p.url && !pinnedUrls.has(String(p.url)) && !droppedSet.has(String(p.url)))
+    const merged = pinned.length ? { ...json, points: [...pinned, ...newPoints] } : json
+
+    updateReportStmt.run({ id, reasoning: null, outline_json: null, final_points_json: JSON.stringify(merged) })
+    res.json({ ok: true, briefing: merged })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Create a report: curate -> outline (9 bullets)
 app.post('/api/reports', async (req, res) => {
   try {

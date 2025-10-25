@@ -22,7 +22,7 @@ function EvidenceDrawer({ open, onClose, sources = [], statusMessage }) {
       <div className="evidence-list">
         {visibleSources.length === 0 ? (
           <div className="empty-state">
-            <p>No sources selected yet. Run the outline to see evidence.</p>
+            <p>No sources selected yet. Generate talking points to see evidence.</p>
           </div>
         ) : (
           visibleSources.map((source) => (
