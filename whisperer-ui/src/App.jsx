@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ChatPane from './components/ChatPane.jsx'
 import ConfigPanel from './components/ConfigPanel.jsx'
 import SourcesTable from './components/SourcesTable.jsx'
 import EmailPreview from './components/EmailPreview.jsx'
-import FeedbackPanel from './components/FeedbackPanel.jsx'
 import EvidenceDrawer from './components/EvidenceDrawer.jsx'
 import { fetchAllSources } from './services/fetchSources.js'
 import { formatEmailHtml } from './services/emailFormatter.js'
@@ -12,6 +12,38 @@ const MAX_PER_RUN = Number(import.meta.env.VITE_MAX_SOURCES_PER_RUN || 42)
 const CONFIG_PERSIST_KEY = 'whisperer-config-v2'
 const LEGACY_SOURCE_PERSIST_KEY = 'whisperer-source-selection'
 const COMPOSE_LAYOUT_KEY = 'whisperer-compose-left-percent'
+const CHAT_TRANSCRIPTS_STORAGE_KEY = 'whisperer-chat-transcripts'
+const CHAT_TRANSCRIPT_LIMIT = 12
+const initialAssistantMessage = {
+  id: 'assistant-welcome',
+  role: 'assistant',
+  text: 'Tell me about the audience, priorities, tone, and any must-haves. Click Draft when you want me to build or revise the email.',
+  createdAt: new Date().toISOString(),
+}
+
+function randomId(prefix) {
+  const random =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2, 10)
+  return `${prefix || 'msg'}-${random}`
+}
+
+function composePromptFromMessages(messages, fallbackPrompt = '') {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return fallbackPrompt
+  }
+  const userSections = messages
+    .filter((message) => message && message.role === 'user' && typeof message.text === 'string')
+    .map((message, index) => `Request ${index + 1}:\n${message.text.trim()}`)
+    .filter((section) => section.trim().length > 0)
+
+  if (userSections.length === 0) {
+    return fallbackPrompt
+  }
+
+  return userSections.join('\n\n')
+}
 function mergeSourceLists(existing, incoming) {
   const map = new Map()
 
@@ -144,6 +176,12 @@ function App() {
   const [configSaveMessage, setConfigSaveMessage] = useState('')
   const [activeView, setActiveView] = useState('compose')
   const [isEvidenceOpen, setIsEvidenceOpen] = useState(false)
+  const [chatMessages, setChatMessages] = useState(() => [initialAssistantMessage])
+  const [sessionId] = useState(() => randomId('chat'))
+  const [initialPrompt, setInitialPrompt] = useState('')
+  const [lastDraftUserCount, setLastDraftUserCount] = useState(0)
+  const [pinnedPoints, setPinnedPoints] = useState([])
+  const [excludedUrls, setExcludedUrls] = useState([])
   const [leftPanePercent, setLeftPanePercent] = useState(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -160,6 +198,7 @@ function App() {
   const [isResizing, setIsResizing] = useState(false)
   const composeLayoutRef = useRef(null)
   const isResizingRef = useRef(false)
+  const transcriptSignatureRef = useRef('')
   const updatePaneFromClientX = useCallback((clientX) => {
     if (!composeLayoutRef.current || typeof clientX !== 'number') return
     const rect = composeLayoutRef.current.getBoundingClientRect()
@@ -336,7 +375,114 @@ function App() {
     if (!hasSelected) setIsEvidenceOpen(false)
   }, [isEvidenceOpen, sources])
 
+  useEffect(() => {
+    if (!briefing || !Array.isArray(briefing.points) || briefing.points.length === 0) {
+      setPinnedPoints((previous) => (previous.length ? [] : previous))
+      setExcludedUrls((previous) => (previous.length ? [] : previous))
+      return
+    }
+
+    const latestByUrl = new Map(
+      briefing.points
+        .filter((point) => point && point.url)
+        .map((point) => [String(point.url), point]),
+    )
+
+    setPinnedPoints((previous) => {
+      if (!previous.length) return previous
+      const next = []
+      const seen = new Set()
+      for (const point of previous) {
+        if (!point || !point.url) continue
+        const key = String(point.url)
+        if (seen.has(key)) continue
+        seen.add(key)
+        const updated = latestByUrl.get(key)
+        if (updated) {
+          next.push(updated)
+        }
+      }
+      if (next.length === previous.length && next.every((item, idx) => item === previous[idx])) {
+        return previous
+      }
+      return next
+    })
+
+    setExcludedUrls((previous) => {
+      if (!previous.length) return previous
+      const filtered = previous.filter((url) => latestByUrl.has(String(url)))
+      return filtered.length === previous.length ? previous : filtered
+    })
+  }, [briefing])
+
   const isAiBusy = isCreatingBriefing || isRevisingBriefing
+  const hasUserMessages = useMemo(
+    () => chatMessages.some((message) => message.role === 'user'),
+    [chatMessages],
+  )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!Array.isArray(chatMessages) || chatMessages.length === 0) return
+    const userMessages = chatMessages.filter((message) => message.role === 'user')
+    if (userMessages.length === 0) return
+
+    const signature = JSON.stringify({
+      ids: chatMessages.map((message) => message.id),
+      pinned: pinnedPoints
+        .filter((point) => point && point.url)
+        .map((point) => String(point.url)),
+      excluded: excludedUrls.map((url) => String(url)),
+      reportId: reportMeta?.id ?? null,
+    })
+
+    if (signature === transcriptSignatureRef.current) return
+    transcriptSignatureRef.current = signature
+
+    const sanitizedMessages = chatMessages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt || null,
+    }))
+
+    const payload = {
+      sessionId,
+      updatedAt: new Date().toISOString(),
+      reportId: reportMeta?.id ?? null,
+      initialPrompt,
+      messageCount: chatMessages.length,
+      userCount: userMessages.length,
+      pinnedCount: pinnedPoints.length,
+      excludedCount: excludedUrls.length,
+      status,
+      messages: sanitizedMessages,
+    }
+
+    let existing = []
+    try {
+      const stored = window.localStorage.getItem(CHAT_TRANSCRIPTS_STORAGE_KEY)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed)) {
+          existing = parsed.filter((entry) => entry && entry.sessionId !== sessionId)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to read stored chat transcripts', error)
+    }
+
+    existing.push(payload)
+    if (existing.length > CHAT_TRANSCRIPT_LIMIT) {
+      existing = existing.slice(existing.length - CHAT_TRANSCRIPT_LIMIT)
+    }
+
+    try {
+      window.localStorage.setItem(CHAT_TRANSCRIPTS_STORAGE_KEY, JSON.stringify(existing))
+    } catch (error) {
+      console.error('Failed to persist chat transcript', error)
+    }
+  }, [chatMessages, excludedUrls, initialPrompt, pinnedPoints, reportMeta, sessionId, status])
 
   const hasEnabledSource = useMemo(
     () => Object.values(config.sources).some((source) => source.enabled),
@@ -587,9 +733,17 @@ function App() {
     setActiveView(view)
   }
 
-  // New: create briefing in one pass
-  const handleCreateBriefing = async () => {
-    if (isAiBusy || isFetching) return
+  const handleCreateBriefing = async (promptText) => {
+    if (isAiBusy || isFetching) {
+      return { ok: false, error: 'AI is busy. Try again once the current run finishes.' }
+    }
+    const effectivePrompt = typeof promptText === 'string' && promptText.trim()
+      ? promptText.trim()
+      : (config.prompt && config.prompt.trim()) || initialConfig.prompt
+    setConfig((previous) => ({
+      ...previous,
+      prompt: effectivePrompt,
+    }))
     setIsCreatingBriefing(true)
     setError(null)
     setErrorStage(null)
@@ -599,7 +753,7 @@ function App() {
     setReportMeta(null)
     try {
       const { start, end } = resolveDateRange()
-      const resp = await createBriefing({ prompt: config.prompt, startDate: start, endDate: end, limit: MAX_PER_RUN })
+      const resp = await createBriefing({ prompt: effectivePrompt, startDate: start, endDate: end, limit: MAX_PER_RUN })
       if (!resp?.ok) throw new Error('Briefing creation failed')
       setBriefing(resp.briefing)
       setReportMeta({ id: resp.id, selectedUrls: resp.selectedUrls || [], selectedIds: resp.selectedIds || [] })
@@ -610,44 +764,212 @@ function App() {
 
       setStatus('done')
       setStatusMessage('Briefing ready to send')
+      return { ok: true, selectedCount: Array.isArray(resp.selectedIds) ? resp.selectedIds.length : 0 }
     } catch (e) {
       console.error(e)
       setError(e.message || 'Briefing creation failed')
       setErrorStage('briefing')
       setStatus('idle')
       setStatusMessage('Creation failed. Adjust prompt/date window and retry.')
+      return { ok: false, error: e.message || 'Briefing creation failed' }
     } finally {
       setIsCreatingBriefing(false)
     }
   }
 
-  // New: revise with feedback
-  const handleReviseBriefing = async ({ feedback, pinnedPoints = [], droppedUrls = [] }) => {
-    if (!reportMeta?.id || isRevisingBriefing) return
+  const handleReviseBriefing = async ({ feedback, pinnedPoints: pinned = [], droppedUrls = [], promptText } = {}) => {
+    if (!reportMeta?.id || isRevisingBriefing) {
+      return { ok: false, error: 'No draft available to revise yet.' }
+    }
+    const effectivePrompt = typeof promptText === 'string' && promptText.trim()
+      ? promptText.trim()
+      : (config.prompt && config.prompt.trim()) || initialPrompt || initialConfig.prompt
+    setConfig((previous) => ({
+      ...previous,
+      prompt: effectivePrompt,
+    }))
     setIsRevisingBriefing(true)
     setStatus('generating')
     setStatusMessage('Regenerating with feedback…')
     setError(null)
     setErrorStage(null)
     try {
-      const resp = await reviseBriefing({ id: reportMeta.id, prompt: config.prompt, feedback, selectedIds: reportMeta?.selectedIds || [], pinnedPoints, droppedUrls, keepPinned: true })
+      const resp = await reviseBriefing({
+        id: reportMeta.id,
+        prompt: effectivePrompt,
+        feedback,
+        selectedIds: reportMeta?.selectedIds || [],
+        pinnedPoints: pinned,
+        droppedUrls,
+        keepPinned: true,
+      })
       if (!resp?.ok) throw new Error('Revision failed')
       setBriefing({ ...resp.briefing, generatedAt: new Date().toISOString(), reasoning: briefing?.reasoning })
       setStatus('done')
       setStatusMessage('Briefing updated')
+      return { ok: true, selectedCount: Array.isArray(resp.briefing?.points) ? resp.briefing.points.length : 0 }
     } catch (e) {
       console.error(e)
       setError(e.message || 'Revision failed')
       setErrorStage('revise')
       setStatus('done')
       setStatusMessage('Revision failed. Update feedback and retry.')
+      return { ok: false, error: e.message || 'Revision failed' }
     } finally {
       setIsRevisingBriefing(false)
     }
   }
 
-  const hasSuccessfulSource = sources.some((item) => !item.error)
-  const canGenerateBriefing = hasSuccessfulSource && !isFetching
+  const handleDraftFromChat = useCallback(
+    async (text) => {
+      const trimmed = typeof text === 'string' ? text.trim() : ''
+      let workingMessages = chatMessages
+      if (trimmed) {
+        const userMessage = {
+          id: randomId('user'),
+          role: 'user',
+          text: trimmed,
+          createdAt: new Date().toISOString(),
+        }
+        workingMessages = [...chatMessages, userMessage]
+        setChatMessages(workingMessages)
+      }
+
+      const userMessages = workingMessages.filter((message) => message.role === 'user')
+      if (userMessages.length === 0) {
+        setChatMessages((previous) => [
+          ...previous,
+          {
+            id: randomId('assistant'),
+            role: 'assistant',
+            text: 'Add at least one message about the audience or focus before drafting.',
+            createdAt: new Date().toISOString(),
+          },
+        ])
+        return
+      }
+
+      const userCount = userMessages.length
+      const placeholderId = randomId('assistant')
+      setChatMessages((previous) => [
+        ...previous,
+        {
+          id: placeholderId,
+          role: 'assistant',
+          text: 'Drafting your briefing…',
+          createdAt: new Date().toISOString(),
+        },
+      ])
+
+      if (!briefing) {
+        const promptText = composePromptFromMessages(userMessages, config.prompt)
+        setInitialPrompt(promptText)
+        const result = await handleCreateBriefing(promptText)
+        if (result.ok) {
+          setLastDraftUserCount(userCount)
+        }
+        const draftSummary = result.ok
+          ? (() => {
+              const parts = ['Draft ready.']
+              if (typeof result.selectedCount === 'number' && result.selectedCount > 0) {
+                parts.push(
+                  `${result.selectedCount} point${result.selectedCount === 1 ? '' : 's'} generated.`,
+                )
+              }
+              parts.push('Review the email preview on the right.')
+              return parts.join(' ')
+            })()
+          : `Draft failed: ${result.error}`
+        setChatMessages((previous) =>
+          previous.map((message) =>
+            message.id === placeholderId
+              ? {
+                  ...message,
+                  text: draftSummary,
+                }
+              : message,
+          ),
+        )
+      } else {
+        const promptText = initialPrompt || composePromptFromMessages(userMessages, config.prompt)
+        const feedbackMessages = userMessages.slice(lastDraftUserCount)
+        const feedbackText = feedbackMessages.length
+          ? feedbackMessages.map((message) => message.text).join('\n\n')
+          : 'Refresh the briefing using the existing guidance.'
+
+        const result = await handleReviseBriefing({
+          feedback: feedbackText,
+          pinnedPoints,
+          droppedUrls: excludedUrls,
+          promptText,
+        })
+        if (result.ok) {
+          setLastDraftUserCount(userCount)
+        }
+        const revisionSummary = result.ok
+          ? (() => {
+              const parts = ['Updated the draft.']
+              if (pinnedPoints.length) {
+                parts.push(`Pinned ${pinnedPoints.length}.`)
+              }
+              if (excludedUrls.length) {
+                parts.push(`Marked ${excludedUrls.length} to drop.`)
+              }
+              parts.push('Review the email preview.')
+              return parts.join(' ')
+            })()
+          : `Revision failed: ${result.error}`
+
+        setChatMessages((previous) =>
+          previous.map((message) =>
+            message.id === placeholderId
+              ? {
+                  ...message,
+                  text: revisionSummary,
+                }
+              : message,
+          ),
+        )
+      }
+    },
+    [
+      chatMessages,
+      briefing,
+      config.prompt,
+      excludedUrls,
+      handleCreateBriefing,
+      handleReviseBriefing,
+      initialPrompt,
+      lastDraftUserCount,
+      pinnedPoints,
+    ],
+  )
+
+  const handleTogglePinPoint = useCallback((point) => {
+    if (!point || !point.url) return
+    const urlKey = String(point.url)
+    setPinnedPoints((previous) => {
+      const exists = previous.some((item) => item && String(item.url) === urlKey)
+      if (exists) {
+        return previous.filter((item) => item && String(item.url) !== urlKey)
+      }
+      return [...previous, point]
+    })
+    setExcludedUrls((previous) => previous.filter((url) => String(url) !== urlKey))
+  }, [])
+
+  const handleToggleExcludePoint = useCallback((point) => {
+    if (!point || !point.url) return
+    const urlKey = String(point.url)
+    setExcludedUrls((previous) => {
+      const exists = previous.some((url) => String(url) === urlKey)
+      if (exists) {
+        return previous.filter((url) => String(url) !== urlKey)
+      }
+      return [...previous, urlKey]
+    })
+    setPinnedPoints((previous) => previous.filter((item) => item && String(item.url) !== urlKey))
+  }, [])
   const selectedUrlSet = useMemo(() => new Set(reportMeta?.selectedUrls || []), [reportMeta])
   const displayedSources = useMemo(() =>
     sources.map((s) => ({ ...s, selected: s.selected || selectedUrlSet.has(s.url) })),
@@ -658,14 +980,39 @@ function App() {
   )
   const totalSourceCount = displayedSources.filter((s) => !s.error).length
   const selectedCount = evidenceSources.length
+  const pinnedUrlSet = useMemo(
+    () =>
+      new Set(
+        pinnedPoints
+          .filter((point) => point && point.url)
+          .map((point) => String(point.url)),
+      ),
+    [pinnedPoints],
+  )
+  const excludedUrlSet = useMemo(
+    () => new Set(excludedUrls.map((url) => String(url))),
+    [excludedUrls],
+  )
   const resolvedDateRange = useMemo(() => resolveDateRange(), [config.startDate, config.endDate])
 
   const formattedEmail = briefing ? formatEmailHtml(config, briefing) : ''
-  const leftPaneStyle = useMemo(() => ({
-    flex: `0 0 ${(leftPanePercent * 100).toFixed(1)}%`,
-    minWidth: 260,
-    maxWidth: '640px',
-  }), [leftPanePercent])
+  const chatWidth = useMemo(
+    () => `clamp(260px, ${(leftPanePercent * 100).toFixed(1)}vw, 640px)`,
+    [leftPanePercent],
+  )
+  const chatPlaceholderWidth = useMemo(
+    () => `calc(${chatWidth} - 32px)`,
+    [chatWidth],
+  )
+  const leftPaneStyle = useMemo(
+    () => ({
+      flex: `0 0 ${chatPlaceholderWidth}`,
+      minWidth: '228px',
+      maxWidth: '608px',
+      position: 'relative',
+    }),
+    [chatPlaceholderWidth],
+  )
   const rightPaneStyle = useMemo(() => ({
     flex: '1 1 auto',
     minWidth: 420,
@@ -715,56 +1062,13 @@ function App() {
           {isComposeView ? (
             <div className="compose-layout" ref={composeLayoutRef}>
               <div className="compose-main" style={leftPaneStyle} id="compose-controls-pane">
-                <div className="panel compose-card">
-                  <div className="panel-header">
-                    <div>
-                      <h2>Compose Briefing</h2>
-                      <p>Write a single prompt, then generate talking points.</p>
-                    </div>
-                  </div>
-                  <div className="panel-body">
-                    <label className="field-group">
-                      <span className="field-label">Briefing Prompt</span>
-                      <textarea
-                        value={config.prompt}
-                        onChange={(event) => handleConfigChange({ prompt: event.target.value })}
-                        rows={4}
-                        spellCheck={false}
-                        placeholder="Topics, key questions, or priorities for this briefing."
-                      />
-                    </label>
-                  </div>
-                  <div className="panel-footer compose-actions">
-                    <div className="button-group">
-                      <button
-                        type="button"
-                        className="primary"
-                        onClick={handleCreateBriefing}
-                        disabled={!canGenerateBriefing || isCreatingBriefing}
-                      >
-                        {isCreatingBriefing ? 'Generating…' : 'Generate Talking Points'}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="source-summary">
-                    <span>{totalSourceCount} source{totalSourceCount === 1 ? '' : 's'} loaded</span>
-                    {progress.total > 0 && (
-                      <span>{progress.loaded}/{progress.total} items processed</span>
-                    )}
-                    <span>{selectedCount} selected for evidence</span>
-                    {resolvedDateRange && (
-                      <span>
-                        Window: {resolvedDateRange.start} → {resolvedDateRange.end}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <FeedbackPanel
-                  briefing={briefing}
-                  onRegenerate={handleReviseBriefing}
-                  isRegenerating={isRevisingBriefing}
-                  onOpenEvidence={handleOpenEvidence}
-                  selectedCount={selectedCount}
+                <ChatPane
+                  messages={chatMessages}
+                  onDraft={handleDraftFromChat}
+                  isDrafting={isAiBusy}
+                  hasUserMessages={hasUserMessages}
+                  hasBriefing={Boolean(briefing)}
+                  width={chatWidth}
                 />
               </div>
               <div
@@ -786,11 +1090,27 @@ function App() {
                   briefing={briefing}
                   htmlContent={formattedEmail}
                   status={status}
+                  pinnedUrlSet={pinnedUrlSet}
+                  excludedUrlSet={excludedUrlSet}
+                  onTogglePin={handleTogglePinPoint}
+                  onToggleExclude={handleToggleExcludePoint}
+                  isDrafting={isAiBusy}
                 />
                 <div className="panel status-panel" data-status={status}>
                   <h3>Workflow Status</h3>
                   <p className="status-label-text">{statusLabels[status] || 'Status'}</p>
                   <p className="status-message-text">{statusMessage}</p>
+                  <div className="status-meta">
+                    <span>{totalSourceCount} loaded source{totalSourceCount === 1 ? '' : 's'}</span>
+                    {progress.total > 0 && (
+                      <span>{progress.loaded}/{progress.total} processed</span>
+                    )}
+                    {resolvedDateRange && (
+                      <span>
+                        Window: {resolvedDateRange.start} → {resolvedDateRange.end}
+                      </span>
+                    )}
+                  </div>
                   {error && (
                     <div className="error-banner compact">
                       <strong>{errorStage ? `${errorStage} error:` : 'Error:'}</strong> {error}

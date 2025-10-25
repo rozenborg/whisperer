@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
 
-function EmailPreview({ briefing, htmlContent, status }) {
+function EmailPreview({
+  briefing,
+  htmlContent,
+  status,
+  pinnedUrlSet = new Set(),
+  excludedUrlSet = new Set(),
+  onTogglePin,
+  onToggleExclude,
+  isDrafting,
+}) {
   const [copied, setCopied] = useState(false)
   const emptyCopy = {
     idle: 'Fetch sources and run the AI step to see the formatted briefing.',
@@ -30,21 +39,64 @@ function EmailPreview({ briefing, htmlContent, status }) {
   const hasContent =
     briefing && (briefing.summary || (briefing.points && briefing.points.length))
 
-  const renderPoint = (point, index) => (
-    <li key={point.url ?? index} className="email-point">
-      <div className="point-header">
-        <span className="point-title">{point.title}</span>
-        <span className="point-type">{point.type}</span>
-      </div>
-      <div className="point-body">
-        <p>{point.insight}</p>
-        <p>{point.implication}</p>
-        <a href={point.url} target="_blank" rel="noreferrer">
-          Open source
-        </a>
-      </div>
-    </li>
-  )
+  const renderPoint = (point, index) => {
+    const urlKey = point.url ? String(point.url) : `point-${index}`
+    const isPinned = pinnedUrlSet instanceof Set && point.url ? pinnedUrlSet.has(String(point.url)) : false
+    const isExcluded = excludedUrlSet instanceof Set && point.url ? excludedUrlSet.has(String(point.url)) : false
+    const canToggle = Boolean(point.url)
+    const togglePin = () => {
+      if (!canToggle || typeof onTogglePin !== 'function') return
+      onTogglePin(point)
+    }
+    const toggleExclude = () => {
+      if (!canToggle || typeof onToggleExclude !== 'function') return
+      onToggleExclude(point)
+    }
+
+    return (
+      <li
+        key={urlKey}
+        className={`email-point${isPinned ? ' is-pinned' : ''}${isExcluded ? ' is-excluded' : ''}`}
+      >
+        <div className="point-header">
+          <div className="point-meta">
+            <span className="point-title">{point.title}</span>
+            {point.type && <span className="point-type">{point.type}</span>}
+          </div>
+          <div className="point-actions">
+            <button
+              type="button"
+              className={`chip${isPinned ? ' selected' : ''}`}
+              onClick={togglePin}
+              disabled={!canToggle || isDrafting}
+            >
+              {isPinned ? 'Pinned' : 'Pin'}
+            </button>
+            <button
+              type="button"
+              className={`chip${isExcluded ? ' selected' : ''}`}
+              onClick={toggleExclude}
+              disabled={!canToggle || isDrafting}
+            >
+              {isExcluded ? 'Excluded' : 'Exclude'}
+            </button>
+          </div>
+        </div>
+        <div className="point-body">
+          <p>{point.insight}</p>
+          <p>{point.implication}</p>
+          <a href={point.url} target="_blank" rel="noreferrer">
+            Open source
+          </a>
+        </div>
+        {isExcluded && (
+          <div className="point-flag" role="status">
+            Will drop this point on the next draft.
+          </div>
+        )}
+      </li>
+    )
+  }
 
   return (
     <div className="panel">
