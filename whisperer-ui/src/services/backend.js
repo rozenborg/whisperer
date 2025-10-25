@@ -35,15 +35,23 @@ export async function ingestSources(items) {
   return post('/api/ingest', { items })
 }
 
-export async function createReport({ persona, request, startDate, endDate, limit = 200 }) {
-  const payload = { persona, request, limit }
+export async function createReport({ prompt, startDate, endDate, limit = 200 }) {
+  const payload = {
+    prompt,
+    request: prompt,
+    limit,
+  }
   if (startDate) payload.startDate = startDate
   if (endDate) payload.endDate = endDate
   return post('/api/reports', payload)
 }
 
-export async function finalizeReport({ id, persona, feedback, selectedIds = [] }) {
-  return post(`/api/reports/${id}/finalize`, { persona, feedback, selectedSourceIds: selectedIds })
+export async function finalizeReport({ id, prompt, feedback, selectedIds = [] }) {
+  return post(`/api/reports/${id}/finalize`, {
+    prompt,
+    feedback,
+    selectedSourceIds: selectedIds,
+  })
 }
 
 export async function listSources({ startDate, endDate, sinceDays = 14, limit = 200 } = {}) {

@@ -32,6 +32,11 @@ export function formatEmailHtml(config, briefing) {
     )
     .join('\n')
 
+  const promptHtml =
+    config?.prompt && typeof config.prompt === 'string'
+      ? escapeHtml(config.prompt).replace(/\n/g, '<br />')
+      : ''
+
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -53,10 +58,21 @@ export function formatEmailHtml(config, briefing) {
       <tr>
         <td>
           <h2 style="font-size: 18px; color: #111827; border-bottom: 1px solid #e5e7eb; padding-bottom: 12px;">
-            Key Points for ${escapeHtml(config.persona)}
+            Key Points
           </h2>
         </td>
       </tr>
+      ${
+        promptHtml
+          ? `
+      <tr>
+        <td style="padding: 12px 0; font-size: 14px; color: #374151;">
+          Prompt: ${promptHtml}
+        </td>
+      </tr>
+      `
+          : ''
+      }
       ${pointsHtml}
       ${
         briefing.reasoning

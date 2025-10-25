@@ -12,13 +12,6 @@ import { ingestSources as ingestToBackend, createReport, finalizeReport, listSou
 const MAX_PER_RUN = Number(import.meta.env.VITE_MAX_SOURCES_PER_RUN || 42)
 const CONFIG_PERSIST_KEY = 'whisperer-config-v2'
 const LEGACY_SOURCE_PERSIST_KEY = 'whisperer-source-selection'
-const personaPresets = [
-  'Fortune 100 Executive',
-  'Growth-Stage Founder',
-  'Chief Strategy Officer',
-  'Head of Innovation',
-]
-
 function mergeSourceLists(existing, incoming) {
   const map = new Map()
 
@@ -88,8 +81,7 @@ const todayIso = new Date().toISOString().slice(0, 10)
 const defaultStartIso = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)
 
 const initialConfig = {
-  persona: 'Fortune 100 Executive',
-  focusAreas: 'Fintech, Enterprise AI, Regulatory',
+  prompt: 'Fortune 100 Executive — Fintech, Enterprise AI, Regulatory',
   startDate: defaultStartIso,
   endDate: todayIso,
   podcastProvider: 'itunes',
@@ -129,7 +121,7 @@ const initialConfig = {
 const statusLabels = {
   idle: 'Ready to add sources',
   fetching: 'Adding sources...',
-  fetched: 'Sources ready for AI curation.',
+  fetched: 'Outline ready for review.',
   curating: 'AI is curating...',
   generating: 'Generating briefing...',
   done: 'Briefing ready to send',
@@ -164,14 +156,10 @@ function App() {
         if (parsed && typeof parsed === 'object') {
           setConfig((previous) => ({
             ...previous,
-            persona:
-              typeof parsed.persona === 'string' && parsed.persona.trim()
-                ? parsed.persona
-                : previous.persona,
-            focusAreas:
-              typeof parsed.focusAreas === 'string' && parsed.focusAreas.trim()
-                ? parsed.focusAreas
-                : previous.focusAreas,
+            prompt:
+              typeof parsed.prompt === 'string' && parsed.prompt.trim()
+                ? parsed.prompt.trim()
+                : previous.prompt,
             startDate:
               typeof parsed.startDate === 'string' && parsed.startDate
                 ? parsed.startDate
@@ -529,7 +517,7 @@ function App() {
     setBriefing(null)
     try {
       const { start, end } = resolveDateRange()
-      const resp = await createReport({ persona: config.persona, request: config.focusAreas, startDate: start, endDate: end, limit: MAX_PER_RUN })
+      const resp = await createReport({ prompt: config.prompt, startDate: start, endDate: end, limit: MAX_PER_RUN })
       if (!resp?.ok) throw new Error('Report creation failed')
       setOutline({ items: resp.outline, reasoning: resp.reasoning })
       setReportMeta({ id: resp.id, selectedUrls: resp.selectedUrls || [], selectedIds: resp.selectedIds || [] })
@@ -554,7 +542,7 @@ function App() {
     setError(null)
     setErrorStage(null)
     try {
-      const resp = await finalizeReport({ id: reportMeta.id, persona: config.persona, feedback: feedbackText, selectedIds: reportMeta?.selectedIds || [] })
+      const resp = await finalizeReport({ id: reportMeta.id, prompt: config.prompt, feedback: feedbackText, selectedIds: reportMeta?.selectedIds || [] })
       if (!resp?.ok) throw new Error('Finalize failed')
       setBriefing({ ...resp.briefing, generatedAt: new Date().toISOString(), reasoning: outline?.reasoning })
       setStatus('done')
@@ -721,32 +709,15 @@ function App() {
                   <div className="panel-header">
                     <div>
                       <h2>Compose Briefing</h2>
-                      <p>Describe your audience and focus, then generate an outline.</p>
+                      <p>Write a single prompt for the briefing, then generate an outline.</p>
                     </div>
-                    <span className={`status-chip status-${status}`}>{statusLabels[status] || 'Status'}</span>
                   </div>
                   <div className="panel-body">
                     <label className="field-group">
-                      <span className="field-label">Executive Persona</span>
-                      <input
-                        type="text"
-                        value={config.persona}
-                        onChange={(event) => handleConfigChange({ persona: event.target.value })}
-                        list="persona-presets"
-                        placeholder="Who will receive this briefing?"
-                      />
-                      <datalist id="persona-presets">
-                        {personaPresets.map((persona) => (
-                          <option key={persona} value={persona} />
-                        ))}
-                      </datalist>
-                    </label>
-
-                    <label className="field-group">
-                      <span className="field-label">Focus / Prompt</span>
+                      <span className="field-label">Briefing Prompt</span>
                       <textarea
-                        value={config.focusAreas}
-                        onChange={(event) => handleConfigChange({ focusAreas: event.target.value })}
+                        value={config.prompt}
+                        onChange={(event) => handleConfigChange({ prompt: event.target.value })}
                         rows={4}
                         spellCheck={false}
                         placeholder="Topics, key questions, or priorities for this briefing."
@@ -772,28 +743,6 @@ function App() {
                         {isRunningAi ? 'Running AI…' : 'Generate Briefing'}
                       </button>
                     </div>
-                    <div className="button-group">
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={handleFetchSources}
-                        disabled={!hasEnabledSource || isFetching || isRunningAi}
-                      >
-                        {isFetching ? 'Fetching…' : 'Refresh Sources'}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={handleIngestToLibrary}
-                        disabled={!hasEnabledSource || isFetching || isRunningAi || isIngesting}
-                      >
-                        {isIngesting ? 'Adding…' : 'Add Sources'}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="status-hint" data-status={status}>
-                    <span className="status-dot" />
-                    <span>{statusMessage}</span>
                   </div>
                   <div className="source-summary">
                     <span>{totalSourceCount} source{totalSourceCount === 1 ? '' : 's'} loaded</span>

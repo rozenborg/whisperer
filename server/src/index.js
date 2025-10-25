@@ -99,7 +99,20 @@ app.delete('/api/sources/:id', (req, res) => {
 // Create a report: curate -> outline (9 bullets)
 app.post('/api/reports', async (req, res) => {
   try {
-    const { persona = 'Executive', request = '', since = '-14 days', limit = 200, startDate, endDate } = req.body || {}
+    const {
+      persona: rawPersona,
+      prompt = '',
+      request = '',
+      since = '-14 days',
+      limit = 200,
+      startDate,
+      endDate,
+    } = req.body || {}
+    const persona = typeof rawPersona === 'string' && rawPersona.trim() ? rawPersona.trim() : null
+    const userPrompt = typeof prompt === 'string' && prompt.trim()
+      ? prompt.trim()
+      : (typeof request === 'string' && request.trim() ? request.trim() : '')
+    const promptCopy = userPrompt || 'No additional guidance provided.'
     const normalizedStart = normalizeDateParam(startDate, false)
     const normalizedEnd = normalizeDateParam(endDate, true)
 
@@ -112,7 +125,7 @@ app.post('/api/reports', async (req, res) => {
     const list = sources
       .map((s, i) => `${i}. ${s.title || 'Untitled'} (${s.source || 'Unknown'}) — ${truncate(s.description, 400)}`)
       .join('\n')
-    const curationPrompt = `You are curating AI news for ${persona}.\n\nSources:\n${list}\n\nSelect 4-8 most relevant items. Return ONLY JSON:\n{ "selected": [0,2], "reasoning": "why" }`
+    const curationPrompt = `You are curating AI news for an executive briefing.\n\nUser prompt:\n${promptCopy}\n\nSources:\n${list}\n\nSelect 4-8 most relevant items. Return ONLY JSON:\n{ "selected": [0,2], "reasoning": "why" }`
     const curationText = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: curationPrompt }] }] })
     const curation = extractJson(curationText)
     const selectedIndices = normalizeSelectedIndices(curation)
@@ -137,14 +150,14 @@ app.post('/api/reports', async (req, res) => {
     const selectedList = selected
       .map((s, i) => `${i + 1}. ${s.title} — ${truncate(s.description, 600)}`)
       .join('\n')
-    const outlinePrompt = `You are drafting a report outline for ${persona}.\n\nSelected sources:\n${selectedList}\n\nPropose 9 bullets with angles. Return ONLY JSON:\n{ "outline": [{"title":"...","angle":"...","sources":["url"]}], "reasoning":"..." }`
+    const outlinePrompt = `You are drafting a report outline for an executive briefing.\n\nUser prompt:\n${promptCopy}\n\nSelected sources:\n${selectedList}\n\nPropose 9 bullets with angles. Return ONLY JSON:\n{ "outline": [{"title":"...","angle":"...","sources":["url"]}], "reasoning":"..." }`
     const outlineText = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: outlinePrompt }] }] })
     const outline = extractJson(outlineText)
     if (!Array.isArray(outline?.outline)) return res.status(502).json({ error: 'Invalid outline response' })
 
     const report = {
       persona,
-      request,
+      request: userPrompt,
       reasoning: outline.reasoning || curation.reasoning || '',
       outline_json: JSON.stringify(outline.outline),
       final_points_json: null,
@@ -161,7 +174,10 @@ app.post('/api/reports', async (req, res) => {
 app.post('/api/reports/:id/finalize', async (req, res) => {
   try {
     const id = Number(req.params.id)
-    const { persona = 'Executive', feedback = '', selectedSourceIds = [] } = req.body || {}
+    const { prompt = '', feedback = '', selectedSourceIds = [] } = req.body || {}
+    const userPrompt = typeof prompt === 'string' && prompt.trim() ? prompt.trim() : ''
+    const promptCopy = userPrompt || 'No additional guidance provided.'
+    const feedbackCopy = typeof feedback === 'string' && feedback.trim() ? feedback.trim() : 'none'
 
     const idsJson = JSON.stringify(selectedSourceIds.map(Number).filter(Boolean))
     const sources = selectSourcesByIdsStmt.all({ idsJson })
@@ -169,8 +185,8 @@ app.post('/api/reports/:id/finalize', async (req, res) => {
     const list = sources
       .map((s, i) => `${i + 1}. ${s.title} — ${truncate(s.description, 800)}`)
       .join('\n')
-    const prompt = `You are generating an executive briefing for ${persona}.\n\nUser feedback: ${feedback || 'none'}\n\nSelected sources:\n${list}\n\nReturn ONLY JSON with: { "summary": "...", "points": [{"title":"...","url":"...","type":"Article|Podcast|Research","insight":"...","implication":"..."}] }`
-    const text = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }] })
+    const promptText = `You are generating an executive briefing.\n\nUser prompt:\n${promptCopy}\n\nUser feedback: ${feedbackCopy}\n\nSelected sources:\n${list}\n\nReturn ONLY JSON with: { "summary": "...", "points": [{"title":"...","url":"...","type":"Article|Podcast|Research","insight":"...","implication":"..."}] }`
+    const text = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: promptText }] }] })
     const json = extractJson(text)
     if (!json?.summary || !Array.isArray(json.points)) return res.status(502).json({ error: 'Invalid briefing response' })
 

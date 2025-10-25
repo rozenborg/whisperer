@@ -4,9 +4,9 @@
 Whisperer is a two-part app: a React front end for composing executive briefings and a small Node/SQLite backend that stores and serves the source library. The happy path looks like this:
 
 1. Open the UI and (optionally) tweak settings via the right-hand gear drawer.
-2. Hit **Add Sources** (either from the Compose card or the Sources tab) to ingest new articles/podcasts for the chosen date range.
+2. Hit **Add Sources** from the Sources tab to ingest new articles/podcasts for the chosen date range.
 3. Review/delete sources in the Sources tab as needed.
-4. In Compose, describe the persona + focus and click **Generate Outline**.
+4. In Compose, write the briefing prompt and click **Generate Outline**.
 5. Review the AI outline, inspect supporting evidence, provide feedback.
 6. Generate talking points — the email preview updates live.
 
@@ -28,12 +28,11 @@ The flow is optimized around “write a one-line prompt → get an outline → q
 - **Save button:** persists settings to `localStorage` (`Saved!` feedback on success).
 
 ### Compose Card
-- Inputs for persona + focus text.
+- Single textarea prompt field (Briefing Prompt) for persona, instructions, and focus.
 - Buttons
   - **Generate Outline** – calls the backend report endpoint using the selected date window.
   - **Generate Briefing** – runs the end-to-end flow using whatever sources are already in the table.
-  - **Add Sources** (ghost button) – same ingestion action as on the Sources tab.
-- Status hint and summary chips (total sources, processed count, selections, active date window).
+- Summary chips (total sources, processed count, selections, active date window).
 
 ### Outline + Evidence
 - Outline panel shows bullets and a “View Sources” button (opens the evidence drawer with per-bullet citations).
@@ -47,7 +46,7 @@ The flow is optimized around “write a one-line prompt → get an outline → q
 ---
 
 ## Source Ingestion
-- Triggered manually via **Add Sources** (Compose or Sources tab). No auto-refresh on load.
+- Triggered manually via **Add Sources** on the Sources tab. No auto-refresh on load.
 - Respects the current date window (`startDate` → `endDate`). If none provided, defaults to “last 7 days ending today.”
 - Each configured feed/podcast/search fetch runs in parallel; results are deduped by canonical URL/content hash.
 - Successful items are written to `server/data/whisperer.sqlite` with a per-run cap (`MAX_SOURCES_PER_RUN`, default 42). Response returns `{ inserted, capped }` for UI messaging.
@@ -102,4 +101,3 @@ Evidence drawer shows all sources flagged as selected — opening it does not tr
 - Bulk delete and pinning/favoriting sources for better curation.
 - Additional web search providers alongside Tavily.
 - Export/sync (e.g., send email, push to Slack) once the talking points flow is stable.
-

@@ -299,6 +299,10 @@ async function fetchTavily(settings, config) {
     throw new Error('Missing Tavily API key. Set VITE_TAVILY_KEY in your .env.local file.')
   }
 
+  const promptText =
+    config?.prompt && config.prompt.trim() ? config.prompt.trim() : 'Executive AI strategy updates'
+  const queryText = promptText.length > 200 ? promptText.slice(0, 200) : promptText
+
   const response = await fetch('https://api.tavily.com/search', {
     method: 'POST',
     headers: {
@@ -306,7 +310,7 @@ async function fetchTavily(settings, config) {
     },
     body: JSON.stringify({
       api_key: tavilyKey,
-      query: `AI updates for ${config.persona}`,
+      query: queryText,
       max_results: settings.max || 5,
       topic: 'news',
     }),

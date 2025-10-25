@@ -118,10 +118,16 @@ function buildCurationPrompt(sources, context) {
     )
     .join('\n')
 
-  return `
-You are curating AI news for ${config.persona}.
+  const userPrompt =
+    config?.prompt && config.prompt.trim()
+      ? config.prompt.trim()
+      : 'No additional guidance provided.'
 
-Focus areas: ${config.focusAreas}
+  return `
+You are curating AI news for an executive briefing.
+
+User prompt:
+${userPrompt}
 
 Sources:
 ${list}
@@ -148,10 +154,16 @@ function buildBriefingPrompt(selectedSources, config) {
     )
     .join('\n')
 
-  return `
-You are creating an executive briefing for ${config.persona}.
+  const userPrompt =
+    config?.prompt && config.prompt.trim()
+      ? config.prompt.trim()
+      : 'No additional guidance provided.'
 
-Focus areas: ${config.focusAreas}
+  return `
+You are creating an executive briefing.
+
+User prompt:
+${userPrompt}
 
 Selected sources:
 ${list}
@@ -167,7 +179,7 @@ Return ONLY valid JSON (no markdown):
       "url": "exact url",
       "type": "Article/Podcast/Research",
       "insight": "2-3 sentences: key strategic takeaway",
-      "implication": "2-3 sentences: what this means for Fortune 100 decision-making"
+      "implication": "2-3 sentences: what this means for senior decision-makers"
     }
   ]
 }
