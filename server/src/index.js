@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
-import { db, upsertSourceStmt, withTransaction, selectRecentSourcesStmt, insertReportStmt, updateReportStmt, selectSourcesByIdsStmt } from './db.js'
+import { db, upsertSourceStmt, withTransaction, selectRecentSourcesStmt, insertReportStmt, updateReportStmt, selectSourcesByIdsStmt, deleteSourceStmt } from './db.js'
 import { normalizeUrl, urlFingerprint } from './urlUtils.js'
 import { callClaude } from './anthropic.js'
 
@@ -77,6 +77,19 @@ app.get('/api/sources', (req, res) => {
   res.json({ items: rows })
 })
 
+app.delete('/api/sources/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid source id' })
+    const info = deleteSourceStmt.run(id)
+    if (info.changes === 0) return res.status(404).json({ error: 'Source not found' })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 // Create a report: curate -> outline (9 bullets)
 app.post('/api/reports', async (req, res) => {
   try {
@@ -91,9 +104,21 @@ app.post('/api/reports', async (req, res) => {
     const curationPrompt = `You are curating AI news for ${persona}.\n\nSources:\n${list}\n\nSelect 4-8 most relevant items. Return ONLY JSON:\n{ "selected": [0,2], "reasoning": "why" }`
     const curationText = await callClaude({ model: MODEL, messages: [{ role: 'user', content: [{ type: 'text', text: curationPrompt }] }] })
     const curation = extractJson(curationText)
-    if (!curation?.selected) return res.status(502).json({ error: 'Invalid curation response' })
+    const selectedIndices = normalizeSelectedIndices(curation)
 
-    const selected = curation.selected
+    if (!selectedIndices.length) {
+      console.warn('Invalid curation response, falling back to recency', {
+        curationText,
+        parsed: curation,
+      })
+    }
+
+    const fallbackIndices = sources.slice(0, Math.min(6, sources.length)).map((_, i) => i)
+    const indicesToUse = (selectedIndices.length ? selectedIndices : fallbackIndices)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value < sources.length)
+
+    const selected = indicesToUse
       .map((i) => sources[i])
       .filter(Boolean)
 
@@ -157,6 +182,82 @@ function extractJson(text) {
   const m = text && text.match(/\{[\s\S]*\}/)
   if (!m) return null
   try { return JSON.parse(m[0]) } catch { return null }
+}
+
+function normalizeSelectedIndices(curation) {
+  if (!curation || typeof curation !== 'object') return []
+
+  const candidates = [
+    curation.selected,
+    curation.selected_indices,
+    curation.selectedIndexes,
+    curation.selected_indexes,
+    curation.indices,
+    curation.indexes,
+    curation.selectedItems,
+    curation.selected_items,
+    curation.selection,
+    curation.choices,
+    curation.items,
+  ]
+
+  for (const candidate of candidates) {
+    const indices = extractIndexArray(candidate)
+    if (indices.length) return Array.from(new Set(indices))
+  }
+
+  const truthyKeys = Object.entries(curation)
+    .filter(([, value]) => typeof value === 'boolean' ? value : false)
+    .map(([key]) => Number(key))
+    .filter((value) => Number.isInteger(value))
+
+  return Array.from(new Set(truthyKeys))
+}
+
+function extractIndexArray(candidate) {
+  if (!candidate) return []
+
+  if (Array.isArray(candidate)) {
+    return candidate.flatMap((value) => {
+      if (typeof value === 'number') return [value]
+      if (typeof value === 'string') {
+        const num = Number.parseInt(value, 10)
+        return Number.isInteger(num) ? [num] : []
+      }
+      if (value && typeof value === 'object') {
+        const inner =
+          value.index ?? value.idx ?? value.i ?? value.position ?? value.value ?? value.selection
+        const num = Number(inner)
+        if (Number.isInteger(num)) return [num]
+        if (Array.isArray(inner) || typeof inner === 'object') {
+          return extractIndexArray(inner)
+        }
+      }
+      return []
+    })
+  }
+
+  if (typeof candidate === 'string') {
+    return candidate
+      .split(/[\s,;]+/)
+      .map((part) => Number.parseInt(part, 10))
+      .filter((value) => Number.isInteger(value))
+  }
+
+  if (typeof candidate === 'object') {
+    const nested =
+      candidate.indices || candidate.indexes || candidate.values || candidate.list || candidate.selected
+    const nestedArray = extractIndexArray(nested)
+
+    const truthyKeys = Object.entries(candidate)
+      .filter(([, value]) => typeof value === 'boolean' ? value : false)
+      .map(([key]) => Number.parseInt(key, 10))
+      .filter((value) => Number.isInteger(value))
+
+    return [...nestedArray, ...truthyKeys]
+  }
+
+  return []
 }
 
 const PORT = Number(process.env.PORT || 8787)

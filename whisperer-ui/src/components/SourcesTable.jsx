@@ -1,4 +1,17 @@
-function SourcesTable({ sources, status, progress, error, errorStage }) {
+function SourcesTable({
+  sources,
+  status,
+  progress,
+  error,
+  errorStage,
+  onFetchSources,
+  onUpdateDatabase,
+  onRemoveSource,
+  isFetching,
+  isIngesting,
+  isRunningAi,
+  hasEnabledSource,
+}) {
   const progressLabel =
     progress.total > 0
       ? `Loaded ${progress.loaded} of ~${progress.total}`
@@ -13,11 +26,14 @@ function SourcesTable({ sources, status, progress, error, errorStage }) {
     done: 'Review the selected sources before sending the email.',
   }
 
+  const fetchDisabled = !hasEnabledSource || isFetching || isRunningAi || isIngesting
+  const updateDisabled = fetchDisabled || isIngesting
+
   const renderRow = (source) => {
     if (source.error) {
       return (
         <tr key={source.id} className="row-error">
-          <td colSpan={4}>
+          <td colSpan={5}>
             <div className="error-chip">
               <span className="error-source">{source.source}</span>
               <span>{source.error}</span>
@@ -39,6 +55,16 @@ function SourcesTable({ sources, status, progress, error, errorStage }) {
           })
     })()
 
+    const numericId = Number(source.id)
+    const canDelete = Number.isInteger(numericId) && numericId > 0
+
+    const handleDelete = () => {
+      if (!canDelete) return
+      if (typeof onRemoveSource === 'function') {
+        onRemoveSource(source)
+      }
+    }
+
     return (
       <tr key={source.id} data-selected={source.selected ? 'true' : 'false'}>
         <td>
@@ -49,6 +75,16 @@ function SourcesTable({ sources, status, progress, error, errorStage }) {
         <td>{source.source}</td>
         <td>{readableDate}</td>
         <td>{source.selected ? 'Selected' : '—'}</td>
+        <td className="actions-cell">
+          {canDelete ? (
+            <button type="button" className="icon-button danger" onClick={handleDelete}>
+              <i className="bi bi-trash" aria-hidden="true" />
+              <span className="sr-only">Remove source</span>
+            </button>
+          ) : (
+            <span className="actions-placeholder">—</span>
+          )}
+        </td>
       </tr>
     )
   }
@@ -60,7 +96,25 @@ function SourcesTable({ sources, status, progress, error, errorStage }) {
           <h2>Sources</h2>
           <p>{statusCopy[status] ?? statusCopy.idle}</p>
         </div>
-        <span className="progress-label">{progressLabel}</span>
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={onFetchSources}
+            disabled={fetchDisabled}
+          >
+            {isFetching ? 'Fetching…' : 'Fetch Sources'}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onUpdateDatabase}
+            disabled={updateDisabled}
+          >
+            {isIngesting ? 'Updating…' : 'Update Database'}
+          </button>
+          <span className="progress-label">{progressLabel}</span>
+        </div>
       </div>
 
       {error && (
@@ -88,6 +142,7 @@ function SourcesTable({ sources, status, progress, error, errorStage }) {
                 <th>Source</th>
                 <th>Date</th>
                 <th>AI</th>
+                <th aria-hidden="true" />
               </tr>
             </thead>
             <tbody>{sources.map((source) => renderRow(source))}</tbody>

@@ -80,8 +80,9 @@ export const updateReportStmt = db.prepare(`
 UPDATE reports SET reasoning=@reasoning, outline_json=@outline_json, final_points_json=@final_points_json WHERE id=@id
 `)
 
+export const deleteSourceStmt = db.prepare('DELETE FROM sources WHERE id = ?')
+
 export function withTransaction(fn) {
   const trx = db.transaction(fn)
   return (...args) => trx(...args)
 }
-

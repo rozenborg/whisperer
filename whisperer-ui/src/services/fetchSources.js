@@ -56,7 +56,7 @@ export const SOURCE_METADATA = {
   mistralBlog: { label: 'Mistral AI News', type: 'Blog' },
   stabilityBlog: { label: 'Stability AI Blog', type: 'Blog' },
   anthropicBlog: { label: 'Anthropic Updates', type: 'Blog' },
-  tavily: { label: 'Tavily News Search', type: 'Tavily' },
+  tavily: { label: 'Tavily News Search', type: 'Web' },
   arxiv: { label: 'ArXiv', type: 'ArXiv' },
 }
 

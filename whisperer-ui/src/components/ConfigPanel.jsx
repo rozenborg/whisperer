@@ -1,152 +1,123 @@
 import { useMemo } from 'react'
 import { SOURCE_METADATA } from '../services/fetchSources.js'
 
-const personaPresets = [
-  'Fortune 100 Executive',
-  'Growth-Stage Founder',
-  'Chief Strategy Officer',
-  'Head of Innovation',
-]
-
 function ConfigPanel({
+  open,
+  onClose,
   config,
   onConfigChange,
   onToggleSource,
   onSelectAllSources,
   onSelectNoneSources,
-  onFetchSources,
-  onGenerateBriefing,
-  onIngestToLibrary,
-  onCreateReport,
-  isFetching,
-  isRunningAi,
-  isIngesting,
-  isCreatingReport,
-  hasEnabledSource,
-  canGenerateBriefing,
-  briefingReady,
-  onSendEmail,
-  status,
-  statusMessage,
+  onSaveConfig,
+  saveMessage,
 }) {
-  const groupedSources = useMemo(() => {
+  const { grouped, web } = useMemo(() => {
     const groups = {
       podcasts: { label: 'Podcasts', items: [] },
       feeds: { label: 'News & Research', items: [] },
     }
+    const webItems = []
 
     Object.entries(config.sources).forEach(([key, settings]) => {
       const metadata = SOURCE_METADATA[key]
+      if (metadata?.type === 'Web') {
+        webItems.push({ key, settings })
+        return
+      }
+
       const bucket = metadata?.type === 'Podcast' ? 'podcasts' : 'feeds'
-      groups[bucket].items.push({ key, settings, metadata })
+      groups[bucket].items.push({ key, settings })
     })
 
-    return Object.values(groups)
-      .map((group) => ({
-        ...group,
-        items: group.items.sort((a, b) => a.settings.label.localeCompare(b.settings.label)),
-      }))
-      .filter((group) => group.items.length)
+    return {
+      grouped: Object.values(groups)
+        .map((group) => ({
+          ...group,
+          items: group.items.sort((a, b) => a.settings.label.localeCompare(b.settings.label)),
+        }))
+        .filter((group) => group.items.length),
+      web: webItems.sort((a, b) => a.settings.label.localeCompare(b.settings.label)),
+    }
   }, [config.sources])
 
-  const handlePersonaChange = (event) => {
-    onConfigChange({ persona: event.target.value })
-  }
-
-  const handleFocusAreasChange = (event) => {
-    onConfigChange({ focusAreas: event.target.value })
-  }
-
-  const handleDateRangeChange = (event) => {
-    const value = Number(event.target.value) || 0
-    onConfigChange({ dateRange: Math.max(value, 1) })
-  }
+  const drawerClass = `config-drawer${open ? ' is-open' : ''}`
 
   const handlePodcastProviderChange = (event) => {
     onConfigChange({ podcastProvider: event.target.value })
   }
 
-  const fetchDisabled = !hasEnabledSource || isFetching || isRunningAi || isIngesting
-  const ingestDisabled = !hasEnabledSource || isFetching || isRunningAi || isIngesting
-  const reportDisabled = isCreatingReport || isRunningAi
-  const generateDisabled = !canGenerateBriefing || isRunningAi
-  const sendDisabled = !briefingReady
+  const hasSaveMessage = Boolean(saveMessage)
 
   return (
-    <div className="panel">
-      <div className="panel-header">
-        <h2>Configuration</h2>
-        <p>Set your preferences, then work through each step to build the briefing.</p>
-      </div>
-
-      <label className="field-group">
-        <span className="field-label">Executive Persona</span>
-        <select value={config.persona} onChange={handlePersonaChange}>
-          {personaPresets.map((persona) => (
-            <option key={persona} value={persona}>
-              {persona}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label className="field-group">
-        <span className="field-label">Podcast Source</span>
-        <select
-          value={config.podcastProvider ?? 'itunes'}
-          onChange={handlePodcastProviderChange}
-        >
-          <option value="itunes">Apple Podcasts Search (default)</option>
-          <option value="listenNotes">Listen Notes API (backup; key)</option>
-        </select>
-        <p className="helper-text">
-          Defaults to Apple Podcasts (free). Falls back to Listen Notes when needed.
-        </p>
-      </label>
-
-      <label className="field-group">
-        <span className="field-label">Focus Areas (comma separated)</span>
-        <textarea
-          value={config.focusAreas}
-          onChange={handleFocusAreasChange}
-          rows={3}
-          spellCheck={false}
-        />
-      </label>
-
-      <label className="field-group inline">
-        <span className="field-label">Date Range</span>
-        <div className="inline-input">
-          <input
-            type="number"
-            min={1}
-            value={config.dateRange}
-            onChange={handleDateRangeChange}
-            aria-label="Date range in days"
-          />
-          <span className="suffix">days</span>
-        </div>
-      </label>
-
-      <div className="field-group">
-        <div className="field-label-row">
-          <span className="field-label">Sources</span>
-          <div className="source-actions">
-            <button type="button" onClick={onSelectAllSources}>
-              Select all
-            </button>
-            <span aria-hidden="true">·</span>
-            <button type="button" onClick={onSelectNoneSources}>
-              Select none
-            </button>
+    <aside className={drawerClass} aria-hidden={!open} aria-label="Settings panel">
+      <div className="config-drawer-inner">
+        <header className="config-drawer-header">
+          <div>
+            <h2>Settings</h2>
+            <p>Choose feeds and podcasts, then compose your briefing.</p>
           </div>
-        </div>
-        <div className="source-groups">
-          {groupedSources.map((group) => (
-            <div key={group.label} className="source-group">
-              <span className="source-group-title">{group.label}</span>
+          <button type="button" className="config-drawer-close" onClick={onClose} aria-label="Close settings">
+            <i className="bi bi-x-lg" aria-hidden="true" />
+          </button>
+        </header>
+
+        <div className="config-drawer-body">
+          <section className="config-section">
+            <h3>Podcasts</h3>
+            <label className="field-group">
+              <span className="field-label">Podcast provider</span>
+              <select value={config.podcastProvider ?? 'itunes'} onChange={handlePodcastProviderChange}>
+                <option value="itunes">Apple Podcasts Search (default)</option>
+                <option value="listenNotes">Listen Notes API (backup; key)</option>
+              </select>
+              <p className="helper-text">Defaults to Apple Podcasts (free). Falls back to Listen Notes when needed.</p>
+            </label>
+          </section>
+
+          <section className="config-section">
+            <div className="config-section-header">
+              <h3>Sources</h3>
+              <div className="source-actions">
+                <button type="button" onClick={onSelectAllSources}>
+                  Select all
+                </button>
+                <span aria-hidden="true">·</span>
+                <button type="button" onClick={onSelectNoneSources}>
+                  Select none
+                </button>
+              </div>
+            </div>
+
+            <div className="source-groups">
+              {grouped.map((group) => (
+                <div key={group.label} className="source-group">
+                  <span className="source-group-title">{group.label}</span>
+                  <div className="source-list">
+                    {group.items.map(({ key, settings }) => (
+                      <label key={key} className="source-item">
+                        <input
+                          type="checkbox"
+                          checked={settings.enabled}
+                          onChange={() => onToggleSource(key)}
+                        />
+                        <span>{settings.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {web.length > 0 && (
+            <section className="config-section">
+              <h3>Web Searches</h3>
+              <p className="helper-text">
+                Enable curated web search integrations to broaden coverage. Results may include mixed quality sources.
+              </p>
               <div className="source-list">
-                {group.items.map(({ key, settings }) => (
+                {web.map(({ key, settings }) => (
                   <label key={key} className="source-item">
                     <input
                       type="checkbox"
@@ -157,67 +128,17 @@ function ConfigPanel({
                   </label>
                 ))}
               </div>
-            </div>
-          ))}
+            </section>
+          )}
         </div>
+
+        <footer className="config-drawer-footer">
+          <button type="button" className="primary" onClick={onSaveConfig}>
+            {hasSaveMessage ? saveMessage : 'Save Configuration'}
+          </button>
+        </footer>
       </div>
-
-      <button
-        type="button"
-        className="primary"
-        onClick={onFetchSources}
-        disabled={fetchDisabled}
-      >
-        {isFetching ? 'Fetching…' : 'Fetch Sources'}
-      </button>
-
-      <button
-        type="button"
-        className="secondary"
-        onClick={onIngestToLibrary}
-        disabled={ingestDisabled}
-      >
-        {isIngesting ? 'Updating…' : 'Update Database (up to 42)'}
-      </button>
-
-      <button
-        type="button"
-        className="secondary"
-        onClick={onCreateReport}
-        disabled={reportDisabled}
-      >
-        {isCreatingReport ? 'Drafting Outline…' : 'Create Report (Outline)'}
-      </button>
-
-      <button
-        type="button"
-        className="secondary"
-        onClick={onGenerateBriefing}
-        disabled={generateDisabled}
-      >
-        {isRunningAi ? 'Running AI…' : 'Generate Briefing'}
-      </button>
-
-      <button
-        type="button"
-        className="ghost"
-        onClick={onSendEmail}
-        disabled={sendDisabled}
-      >
-        Send Briefing via Email (coming soon)
-      </button>
-
-      {!hasEnabledSource && (
-        <p className="helper-text">
-          Enable at least one source to activate the fetch button.
-        </p>
-      )}
-
-      <div className="status-hint" data-status={status}>
-        <span className="status-dot" />
-        <span>{statusMessage}</span>
-      </div>
-    </div>
+    </aside>
   )
 }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-function OutlinePanel({ outline, reasoning, onFinalize, isFinalizing, disabled }) {
+function OutlinePanel({ outline, reasoning, onFinalize, isFinalizing, disabled, onOpenEvidence, selectedCount = 0 }) {
   const [feedback, setFeedback] = useState('')
 
   useEffect(() => {
@@ -8,6 +8,7 @@ function OutlinePanel({ outline, reasoning, onFinalize, isFinalizing, disabled }
   }, [outline])
 
   const hasOutline = Array.isArray(outline) && outline.length > 0
+  const canOpenEvidence = typeof onOpenEvidence === 'function' && selectedCount > 0
 
   return (
     <div className="panel">
@@ -16,6 +17,11 @@ function OutlinePanel({ outline, reasoning, onFinalize, isFinalizing, disabled }
           <h2>Draft Outline</h2>
           <p>Review the AI-proposed bullets. Add feedback before finalizing talking points.</p>
         </div>
+        {canOpenEvidence && (
+          <button type="button" className="secondary subtle" onClick={onOpenEvidence}>
+            View {selectedCount} Source{selectedCount === 1 ? '' : 's'}
+          </button>
+        )}
       </div>
 
       {!hasOutline ? (
@@ -64,4 +70,3 @@ function OutlinePanel({ outline, reasoning, onFinalize, isFinalizing, disabled }
 }
 
 export default OutlinePanel
-

@@ -22,6 +22,15 @@ async function get(path) {
   return res.json()
 }
 
+async function del(path) {
+  const res = await fetch(`${backendBase}${path}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`${path} failed: ${res.status} ${text.slice(0, 240)}`)
+  }
+  return res.json()
+}
+
 export async function ingestSources(items) {
   return post('/api/ingest', { items })
 }
@@ -40,3 +49,6 @@ export async function listSources({ sinceDays = 14, limit = 200 } = {}) {
   return get(`/api/sources?since=${encodeURIComponent(since)}&limit=${encodeURIComponent(limit)}`)
 }
 
+export async function deleteSource(id) {
+  return del(`/api/sources/${encodeURIComponent(id)}`)
+}
