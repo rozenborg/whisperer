@@ -1,6 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-function ChatPane({ messages = [], onDraft, isDrafting, hasUserMessages, hasBriefing, width }) {
+function ChatPane({
+  messages = [],
+  onDraft,
+  isDrafting,
+  hasUserMessages,
+  hasBriefing,
+  width,
+  statusLabel,
+  statusMessage,
+  statusMeta = [],
+  error,
+  onOpenEvidence,
+  evidenceCount = 0,
+}) {
   const [inputValue, setInputValue] = useState('')
   const listRef = useRef(null)
   const bottomRef = useRef(null)
@@ -35,7 +48,6 @@ function ChatPane({ messages = [], onDraft, isDrafting, hasUserMessages, hasBrie
       <div className="chat-pane">
         <div className="chat-pane-header">
           <h2>Compose Conversation</h2>
-          <p>Describe the audience, focus, tone, and constraints. Draft to generate or revise the email preview.</p>
         </div>
 
         <div className="chat-body" ref={listRef}>
@@ -85,9 +97,36 @@ function ChatPane({ messages = [], onDraft, isDrafting, hasUserMessages, hasBrie
             </button>
           </div>
           <p className="chat-hint">
-            Press Ctrl+Enter (⌘+Enter) to draft. Drafting uses every instruction you&apos;ve provided so far.
+
           </p>
         </form>
+
+        <div className="chat-status">
+          <header className="chat-status-header">
+            <span className="chat-status-label">{statusLabel || 'Status'}</span>
+            <span className="chat-status-message">{statusMessage}</span>
+          </header>
+          {statusMeta.length > 0 && (
+            <ul className="chat-status-meta">
+              {statusMeta.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+          {error && (
+            <div className="chat-status-error" role="alert">
+              {error}
+            </div>
+          )}
+          <button
+            type="button"
+            className="ghost"
+            onClick={onOpenEvidence}
+            disabled={!evidenceCount}
+          >
+            View Evidence ({evidenceCount})
+          </button>
+        </div>
       </div>
     </div>
   )

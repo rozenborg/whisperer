@@ -994,6 +994,22 @@ function App() {
     [excludedUrls],
   )
   const resolvedDateRange = useMemo(() => resolveDateRange(), [config.startDate, config.endDate])
+  const statusMeta = useMemo(() => {
+    const meta = []
+    if (totalSourceCount > 0) {
+      meta.push(`${totalSourceCount} source${totalSourceCount === 1 ? '' : 's'} loaded`)
+    }
+    if (progress?.total > 0) {
+      meta.push(`${progress.loaded}/${progress.total} processed`)
+    }
+    if (resolvedDateRange) {
+      meta.push(`Window ${resolvedDateRange.start} → ${resolvedDateRange.end}`)
+    }
+    return meta
+  }, [progress?.loaded, progress?.total, resolvedDateRange, totalSourceCount])
+  const statusErrorText = error
+    ? `${errorStage ? `${errorStage} error: ` : ''}${error}`
+    : ''
 
   const formattedEmail = briefing ? formatEmailHtml(config, briefing) : ''
   const chatWidth = useMemo(
@@ -1069,6 +1085,12 @@ function App() {
                   hasUserMessages={hasUserMessages}
                   hasBriefing={Boolean(briefing)}
                   width={chatWidth}
+                  statusLabel={statusLabels[status] || 'Status'}
+                  statusMessage={statusMessage}
+                  statusMeta={statusMeta}
+                  error={statusErrorText}
+                  onOpenEvidence={handleOpenEvidence}
+                  evidenceCount={selectedCount}
                 />
               </div>
               <div
@@ -1096,30 +1118,6 @@ function App() {
                   onToggleExclude={handleToggleExcludePoint}
                   isDrafting={isAiBusy}
                 />
-                <div className="panel status-panel" data-status={status}>
-                  <h3>Workflow Status</h3>
-                  <p className="status-label-text">{statusLabels[status] || 'Status'}</p>
-                  <p className="status-message-text">{statusMessage}</p>
-                  <div className="status-meta">
-                    <span>{totalSourceCount} loaded source{totalSourceCount === 1 ? '' : 's'}</span>
-                    {progress.total > 0 && (
-                      <span>{progress.loaded}/{progress.total} processed</span>
-                    )}
-                    {resolvedDateRange && (
-                      <span>
-                        Window: {resolvedDateRange.start} → {resolvedDateRange.end}
-                      </span>
-                    )}
-                  </div>
-                  {error && (
-                    <div className="error-banner compact">
-                      <strong>{errorStage ? `${errorStage} error:` : 'Error:'}</strong> {error}
-                    </div>
-                  )}
-                  <button type="button" className="secondary" onClick={handleOpenEvidence} disabled={!selectedCount}>
-                    View Evidence ({selectedCount})
-                  </button>
-                </div>
               </div>
             </div>
           ) : (
