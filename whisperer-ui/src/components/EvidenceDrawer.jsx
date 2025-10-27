@@ -38,7 +38,18 @@ function EvidenceDrawer({ open, onClose, sources = [], statusMessage }) {
                   {source.title || 'Untitled'}
                 </a>
               </h3>
-              {source.description && <p>{source.description.slice(0, 220)}</p>}
+              {source.excerpt ? (
+                <p>{source.excerpt}</p>
+              ) : source.description ? (
+                <p>{source.description.slice(0, 320)}</p>
+              ) : (
+                <p className="muted">Full content not cached yet.</p>
+              )}
+              {source.enrichedAt && (
+                <footer>
+                  <small>Cached {new Date(source.enrichedAt).toLocaleString()}</small>
+                </footer>
+              )}
             </article>
           ))
         )}

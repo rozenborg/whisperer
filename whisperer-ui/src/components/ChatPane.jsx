@@ -7,12 +7,6 @@ function ChatPane({
   hasUserMessages,
   hasBriefing,
   width,
-  statusLabel,
-  statusMessage,
-  statusMeta = [],
-  error,
-  onOpenEvidence,
-  evidenceCount = 0,
 }) {
   const [inputValue, setInputValue] = useState('')
   const listRef = useRef(null)
@@ -47,13 +41,13 @@ function ChatPane({
     <div className="chat-pane-container" style={{ '--chat-pane-width': width }}>
       <div className="chat-pane">
         <div className="chat-pane-header">
-          <h2>Compose Conversation</h2>
+          <h2>Talking Points Chat</h2>
         </div>
 
         <div className="chat-body" ref={listRef}>
           {messages.length === 0 ? (
             <div className="chat-empty">
-              <p>Start with the outcomes you want from this briefing: persona, tone, sections to emphasize, or guardrails.</p>
+              <p>Start with the outcomes you want from these talking points: audience, tone, angles to emphasize, or guardrails.</p>
             </div>
           ) : (
             <ul className="chat-messages" aria-live="polite">
@@ -62,9 +56,9 @@ function ChatPane({
                 const key = message.id || `${role}-${message.text?.slice(0, 12) || 'msg'}`
                 const label =
                   role === 'user'
-                    ? 'Draft Inputs'
+                    ? 'Guidance'
                     : role === 'assistant'
-                      ? 'Draft Status'
+                      ? 'AI Status'
                       : 'Update'
                 return (
                   <li key={key} className={`chat-message chat-message-${role}`}>
@@ -93,40 +87,11 @@ function ChatPane({
           />
           <div className="chat-actions">
             <button type="submit" className="primary" disabled={!canDraft}>
-              {isDrafting ? 'Drafting…' : hasBriefing ? 'Redraft Email' : 'Draft Email'}
+              {isDrafting ? 'Drafting…' : hasBriefing ? 'Regenerate Points' : 'Generate Points'}
             </button>
           </div>
-          <p className="chat-hint">
-
-          </p>
         </form>
 
-        <div className="chat-status">
-          <header className="chat-status-header">
-            <span className="chat-status-label">{statusLabel || 'Status'}</span>
-            <span className="chat-status-message">{statusMessage}</span>
-          </header>
-          {statusMeta.length > 0 && (
-            <ul className="chat-status-meta">
-              {statusMeta.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          )}
-          {error && (
-            <div className="chat-status-error" role="alert">
-              {error}
-            </div>
-          )}
-          <button
-            type="button"
-            className="ghost"
-            onClick={onOpenEvidence}
-            disabled={!evidenceCount}
-          >
-            View Evidence ({evidenceCount})
-          </button>
-        </div>
       </div>
     </div>
   )

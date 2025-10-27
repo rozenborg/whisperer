@@ -1,105 +1,115 @@
-# Whisperer – Current Product Notes
+# Whisperer – Current Product Notes (Oct 2024)
 
-## What the App Does (Today)
-Whisperer is a two-part app: a React front end for composing executive briefings and a small Node/SQLite backend that stores and serves the source library. The happy path looks like this:
+## Overview
+Whisperer pairs a React/Vite front end with a lightweight Express + SQLite backend. It helps you curate high-signal AI news, then generate and iterate on executive-ready talking points. The flow today:
 
-1. Open the UI and (optionally) tweak settings via the right-hand gear drawer.
-2. Hit **Add Sources** from the Sources tab to ingest new articles/podcasts for the chosen date range.
-3. Review/delete sources in the Sources tab as needed.
-4. In Compose, write the briefing prompt and click **Generate Talking Points**.
-5. Review the AI-generated briefing, inspect supporting evidence, and optionally pin/exclude bullets.
-6. Provide feedback, regenerate if needed, then copy/send the final email.
+1. Configure feeds, podcasts, and time window in the settings drawer (gear icon).
+2. In the **Sources** view, click **Add Sources** to pull the latest items for the chosen window.
+3. Review sources, open full articles in the side drawer, delete noise.
+4. Switch to **Compose**, use the chat-style prompt pane to describe the audience/objectives, and click **Draft**.
+5. Inspect the generated email, pin or exclude points, revise with feedback, and copy/send when it’s ready.
 
-The flow is optimized around “write a one-line prompt → receive talking points → iterate with feedback → produce an email executives value.”
+The design optimizes for “fetch → curate quickly → produce an executive briefing grounded in full content.”
 
 ---
 
-## UI Overview
+## UI
 
-### Global Layout
-- **Top bar:** Whisperer title, view tabs (Compose / Sources), gear icon (opens the settings drawer). Settings are hidden by default.
-- **Compose view:** resizable two-column layout — the left column holds the compose prompt and feedback controls, the right column shows the email preview, status, and evidence controls.
-- **Sources view:** single table page showing everything currently in the DB.
+### Global Shell
+- **Header:** app title, view tabs (Compose / Sources), and gear button (settings drawer). The drawer is collapsed by default.
+- **Compose view:** two-column layout — left pane is the chat-style drafting surface, right pane hosts the formatted email and evidence controls. Drag handle adjusts widths.
+- **Sources view:** table of everything currently in SQLite plus a detail drawer for reading the full article/transcript.
 
 ### Settings Drawer (right slide-out)
-- **Podcast provider:** Apple Podcasts (default) or Listen Notes.
-- **Time range:** start/end date pickers; defaults to “today” and “today minus 6 days.” These dates govern ingestion and reporting.
-- **Sources:** checkboxes grouped by Podcasts, News & Research, and Web Searches (Tavily lives here and is disabled by default).
-- **Save button:** persists settings to `localStorage` (`Saved!` feedback on success).
+- **Podcast provider:** Apple Podcasts search (default) or Listen Notes API fallback.
+- **Time range:** start/end date inputs (defaults to “today” and 6 days prior). Drives ingestion, retrieval, and prompting.
+- **Sources:** grouped toggles for Podcasts, News & Research, and Web Searches (Tavily is off by default). Labels no longer mention per-feed caps because policies live on the server.
+- **Save Configuration** persists to `localStorage` (`whisperer-config-v2`).
 
-### Compose + Feedback Column (left)
-- Single textarea prompt field (Briefing Prompt) for persona, instructions, and focus.
-- Primary button: **Generate Talking Points** (calls the one-pass briefing endpoint for the current date range).
-- Summary chips show total sources fetched, processed count, selected evidence count, and active date window.
-- Feedback panel lists the current talking points with controls to **Pin** or **Exclude** individual bullets before regeneration.
-- Feedback textarea + **Regenerate with Feedback** button send tone/focus adjustments back to the AI while respecting pinned/excluded items.
-- Evidence button exposes the cited sources drawer; quick link duplicated in the status panel.
+### Compose View
+- **Chat Pane:** conversational text area where each user message is stored. Hitting **Draft** composes a prompt from user turns and triggers briefing generation. The pane also surfaces status messages, errors, and draft updates.
+- **Briefing Preview:** shows the generated email (summary + bullets + reasoning). Buttons allow pinning/excluding bullets, opening evidence, and copying HTML.
+- **Evidence Drawer:** slides in from the right with the sources backing the current briefing. Each source shows cached excerpts (full article or transcript when available) with timestamps.
+- **Pipeline Bar (below header):** fixed secondary nav under the top header. Shows counts for sources → enriched → filtered → talking points → emails, plus the current action (e.g., “Adding sources”, “Drafting talking points”).
 
-### Email Preview Column (right)
-- **Email Preview** renders the executive-ready briefing (summary + bullets + rationale) and provides a copy action.
-- **Workflow Status** panel mirrors current step (idle, fetching, generating, done), surfaces errors, and links to evidence.
-
-### Sources Tab
-- **Add Sources** (primary button): fetches new items and upserts them into SQLite (cap of `MAX_SOURCES_PER_RUN`, default 42).
-- Table columns: Title, Source, Date, AI flag, Actions (trash icon deletes the row/back-end record).
-- Row errors surface feed/Tavily failures.
+### Sources View
+- **Add Sources** button fetches the latest items, merges them into the in-memory list, and sends them to the backend for storage (per-feed policies apply server-side; no global cap unless `MAX_SOURCES_PER_RUN` is set > 0).
+- **Table columns:** Title (with “Selected” chip if part of the current briefing), Source, Date, Actions. Actions provide:
+  - **View** (`journal` icon) → opens the Source Detail drawer on the right.
+  - **Delete** (`trash` icon) → removes from SQLite and the UI.
+- **Source Detail Drawer:** mirrors the evidence drawer styling but shows a single source. Displays title, publication date, cached excerpt/full content, and a button to fetch or refresh full content via the `/api/enrich` endpoint.
 
 ---
 
-## Source Ingestion
-- Triggered manually via **Add Sources** on the Sources tab. No auto-refresh on load.
-- Respects the current date window (`startDate` → `endDate`). If none provided, defaults to “last 7 days ending today.”
-- Each configured feed/podcast/search fetch runs in parallel; results are deduped by canonical URL/content hash.
-- Successful items are written to `server/data/whisperer.sqlite` with a per-run cap (`MAX_SOURCES_PER_RUN`, default 42). Response returns `{ inserted, capped }` for UI messaging.
-- Rows can be removed via the trash icon (DELETE endpoint); removal updates state immediately.
-
-### Feeds & Search
-- **Podcasts:** Apple Podcasts (default) with Listen Notes fallback.
-- **News/Research:** curated RSS feeds (OpenAI, Anthropic, Google AI, etc.).
-- **Web Searches:** Tavily (disabled by default); additional search providers can be added to the Web section later.
+## Data Ingestion & Storage
+- **Manual trigger:** only runs when **Add Sources** is clicked. No automatic refresh on load.
+- **Per-feed policies:** enforced server-side (`server/src/feeds.js`). Examples: TechCrunch capped at 12 per run, podcasts set to include all, blogs capped at 6. These replace the old UI “max items” caps.
+- **Date handling:** incoming RSS dates are normalized to ISO strings before hitting SQLite so range queries behave consistently.
+- **Deduplication:** URLs are canonicalized (tracking params removed) and hashed; duplicates update metadata without duplicating rows.
+- **On-demand enrichment:** full article text or podcast transcripts are fetched only when needed (during briefing generation, in the Evidence drawer, or via the Source Detail drawer) and cached in the `contents` table.
 
 ---
 
-## AI Workflow
-1. **Briefing generation** (`POST /api/briefings`)
-   - Pulls sources limited by the active date range or a relative fallback (`since = '-14 days'`).
-   - Claude curates the most relevant items and immediately produces executive-ready talking points.
-   - Final JSON (summary + points) is stored in the `reports` table; response returns selected source IDs/URLs for evidence.
-2. **Regeneration with feedback** (`POST /api/briefings/:id/revise`)
-   - Accepts freeform feedback plus optional pinned points and excluded URLs.
-   - Claude rewrites the summary/points while keeping pinned items intact and omitting exclusions.
+## Retrieval & AI Workflow
 
-Evidence drawer shows all sources flagged as selected — opening it does not trigger additional API calls.
+1. **Draft (POST `/api/briefings`)**
+   - Ranked retrieval combines FTS5 keyword search, recency decay, and (when configured) OpenAI embeddings (`text-embedding-3-small`) to shortlist candidates.
+   - Selected sources are auto-enriched (articles scraped with a minimal readability pass; podcasts store show notes/transcript text).
+   - Claude 3.5 Sonnet curates the shortlist, then generates a JSON payload (`summary`, `points[]`). Reasoning and selected source IDs are saved in the `reports` table.
+   - Response returns the briefing, selected source IDs/URLs, and retrieval metadata.
+
+2. **Revise (POST `/api/briefings/:id/revise`)**
+   - Accepts freeform feedback + optional pinned points + excluded URLs.
+   - Claude rewrites the JSON while keeping pins and removing exclusions.
+
+3. **Evidence Drawer**
+   - Fetches cached content via `/api/enrich` if a source lacks full text. Displays excerpts and “cached at” timestamps.
+
+4. **Source Detail Drawer**
+   - Reuses `/api/enrich` to fetch or refresh a single source on demand.
+
+5. **Legacy outline flow** (`/api/reports`, `/api/reports/:id/finalize`) remains available but is no longer used by the Compose chat UI.
+
+Recency bias is tuned to prefer very recent items (explicit instructions in prompts); older sources surface only when clearly superior.
 
 ---
 
 ## Backend Summary
-- **Tech:** Node 18+, Express, better-sqlite3 (file: `data/whisperer.sqlite`).
+- **Stack:** Node 18+, Express, better-sqlite3. Data lives in `server/data/whisperer.sqlite` (WAL mode).
+- **Key tables:**
+  - `sources` – metadata for each article/podcast.
+  - `contents` – cached full text/transcripts (`enriched_at` timestamp).
+  - `embeddings` – per-source embedding vector (provider/model stored alongside JSON-serialized Float32 array).
+  - `reports` – generated briefings / reasoning history.
 - **Endpoints:**
-  - `POST /api/ingest` – ingest batch, returns inserted count.
-  - `GET /api/sources` – accepts `start`, `end`, or `since` + `limit`.
-  - `DELETE /api/sources/:id` – removes a row.
-  - `POST /api/briefings` – curate sources + generate talking points in one pass.
-  - `POST /api/briefings/:id/revise` – regenerate talking points using feedback, pins, and exclusions.
-  - (Legacy) `POST /api/reports` / `POST /api/reports/:id/finalize` remain for the outline-first flow if needed.
-- History: date filtering handled in SQL via `selectSourcesByDateStmt` when explicit start/end provided.
+  - `POST /api/ingest` – apply feed policies, upsert sources (optional global cap via `MAX_SOURCES_PER_RUN`).
+  - `GET /api/sources` – list by date window or relative `since`/`limit`.
+  - `DELETE /api/sources/:id` – remove a source (cascades cached content + embeddings).
+  - `POST /api/enrich` – fetch/cache full content for specific `sourceIds` (supports `force` refresh).
+  - `GET /api/search` – ranked retrieval endpoint (FTS + recency + optional embeddings) used by the server before prompting.
+  - `POST /api/briefings` – curated draft (retrieval → enrichment → Claude call → persist).
+  - `POST /api/briefings/:id/revise` – regenerate with feedback/pins/exclusions.
+  - `POST /api/reports` / `POST /api/reports/:id/finalize` – outline-first legacy path.
+- **Env keys:**
+  - `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (embeddings), `EMBEDDINGS_PROVIDER`/`EMBEDDING_MODEL`, `RECENCY_HALFLIFE_DAYS`, `MAX_SOURCES_PER_RUN` (set `0` to disable global cap), `DATABASE_PATH`, `PORT`.
 
 ---
 
 ## Frontend Summary
-- **React + Vite + hooks**, bootstrap-icons for lightweight icons.
-- `App.jsx` orchestrates state (config, sources, progress, errors) and view switching.
-- Key helpers:
-  - `fetchAllSources` (with optional `dateRange` override) enforces start/end.
-  - `mergeSourceLists` dedupes while preserving selection status.
-  - `resolveDateRange` builds defaults + guards invalid combos.
-- Evidence drawer & settings drawer are independent overlays rendered alongside the main layout.
-- All settings persist into `CONFIG_PERSIST_KEY` (`localStorage`).
+- **Tech:** React (hooks), Vite, bootstrap-icons, vanilla CSS.
+- **State management:** all in `App.jsx` — config, source list, progress, chat history, briefing, evidence cache, drawers.
+- **Services:**
+  - `fetchAllSources` handles live feed fetching, date enforcement, and attaches `feedKey` metadata for the backend.
+  - `backend.js` wraps REST calls (`ingest`, `listSources`, `briefings`, `revise`, `enrich`).
+  - `emailFormatter.js` produces HTML for the preview.
+- **Caching:** evidence + source detail drawers share a memoized cache keyed by source ID to avoid duplicate `/api/enrich` calls.
+- **Progress UI:** now reports the true count of loaded items (no more “~expected total” guess).
 
 ---
 
-## Things To Watch / Next Candidates
-- Background jobs or scheduler if we want passive updates instead of manual “Add Sources.”
-- Bulk delete and pinning/favoriting sources for better curation.
-- Additional web search providers alongside Tavily.
-- Export/sync (e.g., send email, push to Slack) once the talking points flow is stable.
+## Open Questions / Next Steps
+- Improve article extraction (Readability-style parsing) for higher fidelity.
+- Expand embeddings support beyond OpenAI (e.g., Cohere, local models) and surface debug info in the UI.
+- Consider auto-refresh scheduling or background jobs for source ingestion.
+- Add filtering/sorting in the Sources table (by recency, type, feed).
+- Explore direct publishing options (email, Slack) once executive briefings stabilize.

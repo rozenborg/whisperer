@@ -2,22 +2,36 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ChatPane from './components/ChatPane.jsx'
 import ConfigPanel from './components/ConfigPanel.jsx'
 import SourcesTable from './components/SourcesTable.jsx'
-import EmailPreview from './components/EmailPreview.jsx'
 import EvidenceDrawer from './components/EvidenceDrawer.jsx'
+import SourceDetailDrawer from './components/SourceDetailDrawer.jsx'
+import FlowStatusBar from './components/FlowStatusBar.jsx'
+import TalkingPointsPanel from './components/TalkingPointsPanel.jsx'
 import { fetchAllSources } from './services/fetchSources.js'
-import { formatEmailHtml } from './services/emailFormatter.js'
-import { ingestSources as ingestToBackend, listSources, deleteSource as deleteSourceFromBackend, createBriefing, reviseBriefing } from './services/backend.js'
+import {
+  ingestSources as ingestToBackend,
+  listSources,
+  deleteSource as deleteSourceFromBackend,
+  createBriefing,
+  reviseBriefing,
+  enrichSourcesOnDemand,
+  fetchBackendStats,
+  listTalkingPoints,
+  createTalkingPoint,
+  updateTalkingPoint,
+  deleteTalkingPoint,
+  fetchTalkingPointMetrics,
+} from './services/backend.js'
 
-const MAX_PER_RUN = Number(import.meta.env.VITE_MAX_SOURCES_PER_RUN || 42)
+const MAX_PER_RUN = Number(import.meta.env.VITE_MAX_SOURCES_PER_RUN || 200)
 const CONFIG_PERSIST_KEY = 'whisperer-config-v2'
 const LEGACY_SOURCE_PERSIST_KEY = 'whisperer-source-selection'
-const COMPOSE_LAYOUT_KEY = 'whisperer-compose-left-percent'
+const TALKING_LAYOUT_KEY = 'whisperer-compose-left-percent'
 const CHAT_TRANSCRIPTS_STORAGE_KEY = 'whisperer-chat-transcripts'
 const CHAT_TRANSCRIPT_LIMIT = 12
 const initialAssistantMessage = {
   id: 'assistant-welcome',
   role: 'assistant',
-  text: 'Tell me about the audience, priorities, tone, and any must-haves. Click Draft when you want me to build or revise the email.',
+  text: 'Tell me about the audience, priorities, tone, and any must-haves. Click Draft when you want me to build or revise the talking points.',
   createdAt: new Date().toISOString(),
 }
 
@@ -43,6 +57,75 @@ function composePromptFromMessages(messages, fallbackPrompt = '') {
   }
 
   return userSections.join('\n\n')
+}
+
+function extractFirstSentence(text) {
+  if (typeof text !== 'string') return ''
+  const trimmed = text.trim()
+  if (!trimmed) return ''
+  const match = trimmed.match(/(.+?[.!?])(\s|$)/)
+  return match ? match[1].trim() : trimmed
+}
+
+function getSavedPointUrl(point) {
+  if (!point) return ''
+  if (point.source && point.source.url) return String(point.source.url).trim()
+  if (point.sourceUrl) return String(point.sourceUrl).trim()
+  if (point.url) return String(point.url).trim()
+  return ''
+}
+
+function tokenizeForSimilarity(text) {
+  if (!text) return []
+  return String(text)
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) || []
+}
+
+function computeTextSimilarity(a, b) {
+  const tokensA = tokenizeForSimilarity(a)
+  const tokensB = tokenizeForSimilarity(b)
+  if (!tokensA.length || !tokensB.length) return 0
+  const freqA = new Map()
+  const freqB = new Map()
+  tokensA.forEach((token) => {
+    freqA.set(token, (freqA.get(token) || 0) + 1)
+  })
+  tokensB.forEach((token) => {
+    freqB.set(token, (freqB.get(token) || 0) + 1)
+  })
+  let dot = 0
+  let normA = 0
+  let normB = 0
+  freqA.forEach((value, key) => {
+    normA += value * value
+    if (freqB.has(key)) {
+      dot += value * freqB.get(key)
+    }
+  })
+  freqB.forEach((value) => {
+    normB += value * value
+  })
+  if (normA === 0 || normB === 0) return 0
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+function sanitizeTagList(value) {
+  if (!value) return []
+  if (Array.isArray(value)) {
+    return value
+      .map((tag) => String(tag).trim().toLowerCase())
+      .filter((tag) => tag && tag.length <= 40)
+      .slice(0, 8)
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/[,\s]+/)
+      .map((tag) => tag.trim().toLowerCase())
+      .filter((tag) => tag && tag.length <= 40)
+      .slice(0, 8)
+  }
+  return []
 }
 function mergeSourceLists(existing, incoming) {
   const map = new Map()
@@ -118,35 +201,35 @@ const initialConfig = {
   endDate: todayIso,
   podcastProvider: 'itunes',
   sources: {
-    techcrunch: { enabled: true, max: 10, label: 'TechCrunch AI (10 items)' },
-    noPriors: { enabled: true, max: 3, label: 'No Priors Podcast (3 items)' },
-    a16z: { enabled: true, max: 3, label: 'a16z Podcast (3 items)' },
-    dwarkesh: { enabled: true, max: 3, label: 'Dwarkesh Podcast (3 items)' },
-    lexfridman: { enabled: true, max: 3, label: 'Lex Fridman Podcast (3 items)' },
-    twiml: { enabled: true, max: 3, label: 'TWIML AI Podcast (3 items)' },
-    thisDayInAi: { enabled: true, max: 3, label: 'This Day in AI (3 items)' },
-    latentSpace: { enabled: true, max: 3, label: 'Latent Space (3 items)' },
-    mlst: { enabled: true, max: 3, label: 'Machine Learning Street Talk (3 items)' },
-    yCombinator: { enabled: true, max: 3, label: 'Y Combinator Podcast (3 items)' },
-    trainingData: { enabled: true, max: 3, label: 'Training Data Podcast (3 items)' },
-    deepmind: { enabled: true, max: 3, label: 'Google DeepMind Podcast (3 items)' },
-    openaiBlog: { enabled: true, max: 5, label: 'OpenAI Blog (5 items)' },
-    openaiResearch: { enabled: true, max: 5, label: 'OpenAI Research (5 items)' },
-    deepmindBlog: { enabled: true, max: 5, label: 'Google DeepMind Blog (5 items)' },
-    metaAiBlog: { enabled: true, max: 5, label: 'Meta AI Blog (5 items)' },
-    googleAiBlog: { enabled: true, max: 5, label: 'Google AI Blog (5 items)' },
-    microsoftAiBlog: { enabled: true, max: 5, label: 'Microsoft AI Blog (5 items)' },
-    nvidiaBlog: { enabled: true, max: 5, label: 'NVIDIA AI Blog (5 items)' },
-    mitAiBlog: { enabled: true, max: 5, label: 'MIT Tech Review – AI (5 items)' },
-    gradientBlog: { enabled: true, max: 5, label: 'The Gradient (5 items)' },
-    ai2Blog: { enabled: true, max: 5, label: 'AI2 Blog (5 items)' },
-    eleutherBlog: { enabled: true, max: 5, label: 'Eleuther AI News (5 items)' },
-    cohereBlog: { enabled: true, max: 5, label: 'Cohere Blog (5 items)' },
-    mistralBlog: { enabled: true, max: 5, label: 'Mistral AI News (5 items)' },
-    stabilityBlog: { enabled: true, max: 5, label: 'Stability AI Blog (5 items)' },
-    anthropicBlog: { enabled: true, max: 5, label: 'Anthropic Updates (5 items)' },
-    tavily: { enabled: false, max: 5, label: 'Tavily News Search (5 items)' },
-    arxiv: { enabled: true, max: 5, label: 'ArXiv Papers (5 items)' },
+    techcrunch: { enabled: true, max: 10, label: 'TechCrunch AI' },
+    noPriors: { enabled: true, max: 3, label: 'No Priors Podcast' },
+    a16z: { enabled: true, max: 3, label: 'a16z Podcast' },
+    dwarkesh: { enabled: true, max: 3, label: 'Dwarkesh Podcast' },
+    lexfridman: { enabled: true, max: 3, label: 'Lex Fridman Podcast' },
+    twiml: { enabled: true, max: 3, label: 'TWIML AI Podcast' },
+    thisDayInAi: { enabled: true, max: 3, label: 'This Day in AI' },
+    latentSpace: { enabled: true, max: 3, label: 'Latent Space' },
+    mlst: { enabled: true, max: 3, label: 'Machine Learning Street Talk' },
+    yCombinator: { enabled: true, max: 3, label: 'Y Combinator Podcast' },
+    trainingData: { enabled: true, max: 3, label: 'Training Data Podcast' },
+    deepmind: { enabled: true, max: 3, label: 'Google DeepMind Podcast' },
+    openaiBlog: { enabled: true, max: 5, label: 'OpenAI Blog' },
+    openaiResearch: { enabled: true, max: 5, label: 'OpenAI Research' },
+    deepmindBlog: { enabled: true, max: 5, label: 'Google DeepMind Blog' },
+    metaAiBlog: { enabled: true, max: 5, label: 'Meta AI Blog' },
+    googleAiBlog: { enabled: true, max: 5, label: 'Google AI Blog' },
+    microsoftAiBlog: { enabled: true, max: 5, label: 'Microsoft AI Blog' },
+    nvidiaBlog: { enabled: true, max: 5, label: 'NVIDIA AI Blog' },
+    mitAiBlog: { enabled: true, max: 5, label: 'MIT Tech Review – AI' },
+    gradientBlog: { enabled: true, max: 5, label: 'The Gradient' },
+    ai2Blog: { enabled: true, max: 5, label: 'AI2 Blog' },
+    eleutherBlog: { enabled: true, max: 5, label: 'Eleuther AI News' },
+    cohereBlog: { enabled: true, max: 5, label: 'Cohere Blog' },
+    mistralBlog: { enabled: true, max: 5, label: 'Mistral AI News' },
+    stabilityBlog: { enabled: true, max: 5, label: 'Stability AI Blog' },
+    anthropicBlog: { enabled: true, max: 5, label: 'Anthropic Updates' },
+    tavily: { enabled: false, max: 5, label: 'Tavily News Search' },
+    arxiv: { enabled: true, max: 5, label: 'ArXiv Papers' },
   },
 }
 
@@ -154,8 +237,8 @@ const statusLabels = {
   idle: 'Ready to add sources',
   fetching: 'Adding sources...',
   curating: 'Selecting top sources…',
-  generating: 'Composing executive talking points…',
-  done: 'Briefing ready to send',
+  generating: 'Drafting executive talking points…',
+  done: 'Talking points ready',
 }
 
 function App() {
@@ -174,7 +257,7 @@ function App() {
   const [isRevisingBriefing, setIsRevisingBriefing] = useState(false)
   const [isConfigCollapsed, setIsConfigCollapsed] = useState(true)
   const [configSaveMessage, setConfigSaveMessage] = useState('')
-  const [activeView, setActiveView] = useState('compose')
+  const [activeView, setActiveView] = useState('points')
   const [isEvidenceOpen, setIsEvidenceOpen] = useState(false)
   const [chatMessages, setChatMessages] = useState(() => [initialAssistantMessage])
   const [sessionId] = useState(() => randomId('chat'))
@@ -182,10 +265,25 @@ function App() {
   const [lastDraftUserCount, setLastDraftUserCount] = useState(0)
   const [pinnedPoints, setPinnedPoints] = useState([])
   const [excludedUrls, setExcludedUrls] = useState([])
+  const [savedPoints, setSavedPoints] = useState([])
+  const [isLoadingSavedPoints, setIsLoadingSavedPoints] = useState(false)
+  const [pendingPointSaves, setPendingPointSaves] = useState(() => new Set())
+  const [pendingPointUpdates, setPendingPointUpdates] = useState(() => new Set())
+  const [pendingPointDeletes, setPendingPointDeletes] = useState(() => new Set())
+  const [isSavingAllPoints, setIsSavingAllPoints] = useState(false)
+  const [talkingPointMetrics, setTalkingPointMetrics] = useState(null)
+  const [isMetricsLoading, setIsMetricsLoading] = useState(false)
+  const [enrichedEvidence, setEnrichedEvidence] = useState({})
+  const [evidenceStatusMessage, setEvidenceStatusMessage] = useState('')
+  const [activeSourceId, setActiveSourceId] = useState(null)
+  const [isSourceDrawerOpen, setIsSourceDrawerOpen] = useState(false)
+  const [sourceDrawerStatus, setSourceDrawerStatus] = useState('')
+  const [isSourceDetailLoading, setIsSourceDetailLoading] = useState(false)
+  const [flowStats, setFlowStats] = useState({ totalSources: 0, enrichedSources: 0, totalReports: 0, totalTalkingPoints: 0 })
   const [leftPanePercent, setLeftPanePercent] = useState(() => {
     if (typeof window !== 'undefined') {
       try {
-        const stored = Number.parseFloat(window.localStorage.getItem(COMPOSE_LAYOUT_KEY) || '')
+        const stored = Number.parseFloat(window.localStorage.getItem(TALKING_LAYOUT_KEY) || '')
         if (!Number.isNaN(stored) && stored >= 0.2 && stored <= 0.7) {
           return stored
         }
@@ -199,6 +297,7 @@ function App() {
   const composeLayoutRef = useRef(null)
   const isResizingRef = useRef(false)
   const transcriptSignatureRef = useRef('')
+  const evidenceCacheRef = useRef(new Map())
   const updatePaneFromClientX = useCallback((clientX) => {
     if (!composeLayoutRef.current || typeof clientX !== 'number') return
     const rect = composeLayoutRef.current.getBoundingClientRect()
@@ -226,7 +325,7 @@ function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined
     try {
-      window.localStorage.setItem(COMPOSE_LAYOUT_KEY, leftPanePercent.toFixed(4))
+      window.localStorage.setItem(TALKING_LAYOUT_KEY, leftPanePercent.toFixed(4))
     } catch {
       /* ignore storage failures */
     }
@@ -330,9 +429,23 @@ function App() {
     return () => clearTimeout(timeout)
   }, [configSaveMessage])
 
+  const savedPointUrlSet = useMemo(() => {
+    const set = new Set()
+    savedPoints.forEach((item) => {
+      const url = getSavedPointUrl(item)
+      if (url) {
+        set.add(url)
+      }
+    })
+    return set
+  }, [savedPoints])
+
   useEffect(() => {
-    if (activeView !== 'compose') {
+    if (activeView !== 'points') {
       setIsEvidenceOpen(false)
+    }
+    if (activeView !== 'sources') {
+      setIsSourceDrawerOpen(false)
     }
   }, [activeView])
 
@@ -374,6 +487,16 @@ function App() {
     const hasSelected = sources.some((item) => item && item.selected)
     if (!hasSelected) setIsEvidenceOpen(false)
   }, [isEvidenceOpen, sources])
+
+  useEffect(() => {
+    if (!activeSourceId) return
+    const exists = sources.some((item) => Number(item?.id) === Number(activeSourceId))
+    if (!exists) {
+      setIsSourceDrawerOpen(false)
+      setActiveSourceId(null)
+      setSourceDrawerStatus('')
+    }
+  }, [sources, activeSourceId])
 
   useEffect(() => {
     if (!briefing || !Array.isArray(briefing.points) || briefing.points.length === 0) {
@@ -547,7 +670,7 @@ function App() {
     }
   }
 
-  const resolveDateRange = () => {
+  const resolveDateRange = useCallback(() => {
     const start = config.startDate
     const end = config.endDate
     if (start && end) return { start, end }
@@ -572,7 +695,75 @@ function App() {
       from = new Date(endDate.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
     }
     return { start: from, end: endIso }
-  }
+  }, [config.endDate, config.startDate])
+
+  const refreshTalkingPointMetrics = useCallback(async () => {
+    setIsMetricsLoading(true)
+    try {
+      const resp = await fetchTalkingPointMetrics({ limit: 30 })
+      if (resp && typeof resp === 'object') {
+        setTalkingPointMetrics(resp)
+      }
+    } catch (err) {
+      console.error('Failed to fetch talking point metrics', err)
+    } finally {
+      setIsMetricsLoading(false)
+    }
+  }, [])
+
+  const loadSavedTalkingPoints = useCallback(async () => {
+    setIsLoadingSavedPoints(true)
+    try {
+      const { start, end } = resolveDateRange()
+      const resp = await listTalkingPoints({ startDate: start, endDate: end, limit: 500 })
+      if (resp?.items && Array.isArray(resp.items)) {
+        setSavedPoints(resp.items)
+        refreshTalkingPointMetrics()
+      } else {
+        setSavedPoints([])
+        refreshTalkingPointMetrics()
+      }
+    } catch (err) {
+      console.error('Failed to load saved talking points', err)
+      setStatusMessage('Failed to load saved talking points.')
+    } finally {
+      setIsLoadingSavedPoints(false)
+    }
+  }, [refreshTalkingPointMetrics, resolveDateRange])
+
+  const findSimilarSavedPoint = useCallback(
+    (headline, body, sourceUrl) => {
+      const reference = `${headline || ''}\n${body || ''}`.trim()
+      if (!reference) return null
+      const normalizedRef = reference.toLowerCase()
+      const refUrl = typeof sourceUrl === 'string' ? sourceUrl.trim() : ''
+      let bestScore = 0
+      let bestPoint = null
+      savedPoints.forEach((item) => {
+        const candidateUrl = getSavedPointUrl(item)
+        if (refUrl && candidateUrl && candidateUrl === refUrl) return
+        const candidateText = `${item.headline || ''}\n${item.body || ''}`.trim().toLowerCase()
+        if (!candidateText) return
+        const score = computeTextSimilarity(normalizedRef, candidateText)
+        if (score > bestScore) {
+          bestScore = score
+          bestPoint = item
+        }
+      })
+      if (bestScore >= 0.82 && bestPoint) {
+        return {
+          score: bestScore,
+          point: bestPoint,
+        }
+      }
+      return null
+    },
+    [savedPoints],
+  )
+
+  useEffect(() => {
+    loadSavedTalkingPoints()
+  }, [loadSavedTalkingPoints])
 
   const handleFetchSources = async () => {
     if (!hasEnabledSource || isFetching || isAiBusy) return
@@ -594,7 +785,7 @@ function App() {
             const merged = mergeSourceLists(previous, batch)
             setProgress((prev) => ({
               loaded: merged.length,
-              total: Math.max(prev.total, merged.length),
+              total: merged.length,
             }))
             return merged
           })
@@ -641,7 +832,7 @@ function App() {
 
     setIsIngesting(true)
     setStatus('fetching')
-    setStatusMessage(`Adding sources to database (up to ${MAX_PER_RUN})...`)
+    setStatusMessage('Adding sources to database...')
     setProgress({ loaded: 0, total: 0 })
     setError(null)
     setErrorStage(null)
@@ -656,7 +847,7 @@ function App() {
             const merged = mergeSourceLists(prev, batch)
             setProgress((prior) => ({
               loaded: merged.length,
-              total: Math.max(prior.total, merged.length),
+              total: merged.length,
             }))
             return merged
           })
@@ -667,22 +858,23 @@ function App() {
       })
 
       const successful = allSources.filter((i) => !i.error)
-      // Enforce global cap per run
-      const capped = successful.slice(0, MAX_PER_RUN)
-      if (!capped.length) throw new Error('No sources fetched to ingest.')
+      if (!successful.length) throw new Error('No sources fetched to ingest.')
 
-      setStatusMessage(`Ingesting ${capped.length} into database...`)
-      const result = await ingestToBackend(capped)
+      setStatusMessage(
+        `Ingesting ${successful.length} into database (server enforces per-feed policy)...`,
+      )
+      const result = await ingestToBackend(successful)
       let mergedList
       setSources((prev) => {
-        mergedList = mergeSourceLists(prev, capped)
+        mergedList = mergeSourceLists(prev, successful)
         return mergedList
       })
       if (mergedList) {
         setProgress({ loaded: mergedList.length, total: mergedList.length })
       }
       setStatus('idle')
-      setStatusMessage(`Database updated (${result.inserted} items upserted; cap ${MAX_PER_RUN}).`)
+      setStatusMessage(`Database updated (${result.inserted} item${result.inserted === 1 ? '' : 's'} upserted).`)
+      refreshFlowStats()
     } catch (e) {
       console.error(e)
       setError(e.message || 'Ingestion failed')
@@ -721,6 +913,7 @@ function App() {
       if (selectedCount && source.selected) {
         setStatusMessage('Source removed from briefing and database.')
       }
+      refreshFlowStats()
     } catch (err) {
       console.error(err)
       setError(err.message || 'Failed to remove source')
@@ -754,7 +947,7 @@ function App() {
     try {
       const { start, end } = resolveDateRange()
       const resp = await createBriefing({ prompt: effectivePrompt, startDate: start, endDate: end, limit: MAX_PER_RUN })
-      if (!resp?.ok) throw new Error('Briefing creation failed')
+      if (!resp?.ok) throw new Error('Talking point generation failed')
       setBriefing(resp.briefing)
       setReportMeta({ id: resp.id, selectedUrls: resp.selectedUrls || [], selectedIds: resp.selectedIds || [] })
 
@@ -763,15 +956,16 @@ function App() {
       setSources((prev) => prev.map((s) => ({ ...s, selected: selectedSet.has(s.url) })))
 
       setStatus('done')
-      setStatusMessage('Briefing ready to send')
+      setStatusMessage('Talking points ready')
+      refreshFlowStats()
       return { ok: true, selectedCount: Array.isArray(resp.selectedIds) ? resp.selectedIds.length : 0 }
     } catch (e) {
       console.error(e)
-      setError(e.message || 'Briefing creation failed')
+      setError(e.message || 'Talking point generation failed')
       setErrorStage('briefing')
       setStatus('idle')
-      setStatusMessage('Creation failed. Adjust prompt/date window and retry.')
-      return { ok: false, error: e.message || 'Briefing creation failed' }
+      setStatusMessage('Generation failed. Adjust prompt/date window and retry.')
+      return { ok: false, error: e.message || 'Talking point generation failed' }
     } finally {
       setIsCreatingBriefing(false)
     }
@@ -806,7 +1000,7 @@ function App() {
       if (!resp?.ok) throw new Error('Revision failed')
       setBriefing({ ...resp.briefing, generatedAt: new Date().toISOString(), reasoning: briefing?.reasoning })
       setStatus('done')
-      setStatusMessage('Briefing updated')
+      setStatusMessage('Talking points updated')
       return { ok: true, selectedCount: Array.isArray(resp.briefing?.points) ? resp.briefing.points.length : 0 }
     } catch (e) {
       console.error(e)
@@ -856,7 +1050,7 @@ function App() {
         {
           id: placeholderId,
           role: 'assistant',
-          text: 'Drafting your briefing…',
+          text: 'Drafting your talking points…',
           createdAt: new Date().toISOString(),
         },
       ])
@@ -876,7 +1070,7 @@ function App() {
                   `${result.selectedCount} point${result.selectedCount === 1 ? '' : 's'} generated.`,
                 )
               }
-              parts.push('Review the email preview on the right.')
+              parts.push('Review the talking points on the right.')
               return parts.join(' ')
             })()
           : `Draft failed: ${result.error}`
@@ -895,7 +1089,7 @@ function App() {
         const feedbackMessages = userMessages.slice(lastDraftUserCount)
         const feedbackText = feedbackMessages.length
           ? feedbackMessages.map((message) => message.text).join('\n\n')
-          : 'Refresh the briefing using the existing guidance.'
+          : 'Refresh the talking points using the existing guidance.'
 
         const result = await handleReviseBriefing({
           feedback: feedbackText,
@@ -908,14 +1102,14 @@ function App() {
         }
         const revisionSummary = result.ok
           ? (() => {
-              const parts = ['Updated the draft.']
+              const parts = ['Updated the talking points.']
               if (pinnedPoints.length) {
                 parts.push(`Pinned ${pinnedPoints.length}.`)
               }
               if (excludedUrls.length) {
                 parts.push(`Marked ${excludedUrls.length} to drop.`)
               }
-              parts.push('Review the email preview.')
+              parts.push('Review the talking points panel.')
               return parts.join(' ')
             })()
           : `Revision failed: ${result.error}`
@@ -931,7 +1125,7 @@ function App() {
           ),
         )
       }
-    },
+  },
     [
       chatMessages,
       briefing,
@@ -944,6 +1138,464 @@ function App() {
       pinnedPoints,
     ],
   )
+
+  const refreshFlowStats = useCallback(async () => {
+    try {
+      const resp = await fetchBackendStats()
+      if (resp && typeof resp === 'object') {
+        const {
+          totalSources = 0,
+          enrichedSources = 0,
+          totalReports = 0,
+          totalTalkingPoints = 0,
+        } = resp
+        setFlowStats({
+          totalSources: Number(totalSources) || 0,
+          enrichedSources: Number(enrichedSources) || 0,
+          totalReports: Number(totalReports) || 0,
+          totalTalkingPoints: Number(totalTalkingPoints) || 0,
+        })
+      }
+    } catch (err) {
+      console.error('Failed to refresh flow stats', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshFlowStats()
+  }, [refreshFlowStats])
+
+  const findSourceIdForUrl = useCallback(
+    (url) => {
+      if (typeof url !== 'string') return null
+      const trimmed = url.trim()
+      if (!trimmed) return null
+      const match = sources.find(
+        (item) => item && typeof item.url === 'string' && item.url.trim() === trimmed,
+      )
+      if (!match || !match.id) return null
+      const numeric = Number(match.id)
+      if (Number.isInteger(numeric) && numeric > 0) return numeric
+      return null
+    },
+    [sources],
+  )
+
+  const buildGeneratedPointKey = useCallback((point) => {
+    if (!point || typeof point !== 'object') return ''
+    if (point.url) return `url:${String(point.url)}`
+    if (point.title) return `title:${String(point.title)}`
+    if (point.insight) return `insight:${String(point.insight).slice(0, 60)}`
+    if (point.implication) return `implication:${String(point.implication).slice(0, 60)}`
+    return `point:${JSON.stringify(point).slice(0, 60)}`
+  }, [])
+
+  const formatPointForSave = useCallback(
+    (point, { tags = [] } = {}) => {
+      if (!point || typeof point !== 'object') return null
+      const headline =
+        (typeof point.title === 'string' && point.title.trim()) ||
+        extractFirstSentence(point.insight) ||
+        'New talking point'
+      const insight = typeof point.insight === 'string' ? point.insight.trim() : ''
+      const implication = typeof point.implication === 'string' ? point.implication.trim() : ''
+      const bodyParts = [insight, implication].filter(Boolean)
+      const body = bodyParts.length ? bodyParts.join('\n\n') : headline
+      const sourceUrl = typeof point.url === 'string' && point.url.trim() ? point.url.trim() : null
+      const sourceId = sourceUrl ? findSourceIdForUrl(sourceUrl) : null
+      const normalizedTags = sanitizeTagList(tags)
+      return {
+        headline,
+        body,
+        sourceId,
+        sourceUrl,
+        relatedSourceIds: [],
+        tags: normalizedTags,
+      }
+    },
+    [findSourceIdForUrl],
+  )
+
+  const isGeneratedPointSaved = useCallback(
+    (point) => {
+      const payload = formatPointForSave(point)
+      if (!payload) return false
+      const urlKey = payload.sourceUrl ? payload.sourceUrl.trim() : ''
+      if (urlKey && savedPointUrlSet.has(urlKey)) return true
+      const headlineKey = payload.headline ? payload.headline.trim().toLowerCase() : ''
+      if (!headlineKey) return false
+      return savedPoints.some(
+        (item) =>
+          typeof item?.headline === 'string' &&
+          item.headline.trim().toLowerCase() === headlineKey,
+      )
+    },
+    [formatPointForSave, savedPointUrlSet, savedPoints],
+  )
+
+  const isSavingGeneratedPoint = useCallback(
+    (point) => {
+      const key = buildGeneratedPointKey(point)
+      return pendingPointSaves.has(key)
+    },
+    [buildGeneratedPointKey, pendingPointSaves],
+  )
+
+  const handleSaveGeneratedPoint = useCallback(
+    async (point, { tags = [], force = false } = {}) => {
+      const payload = formatPointForSave(point, { tags })
+      if (!payload) {
+        setStatusMessage('Unable to save this talking point.')
+        return { ok: false, error: 'Invalid talking point' }
+      }
+      const urlKey = payload.sourceUrl ? payload.sourceUrl.trim() : ''
+      if (urlKey && savedPointUrlSet.has(urlKey)) {
+        setStatusMessage('Already saved this talking point.')
+        return { ok: true, skipped: true }
+      }
+      if (!urlKey) {
+        const headlineKey = payload.headline ? payload.headline.trim().toLowerCase() : ''
+        if (
+          headlineKey &&
+          savedPoints.some(
+            (item) =>
+              typeof item?.headline === 'string' &&
+              item.headline.trim().toLowerCase() === headlineKey,
+          )
+        ) {
+          setStatusMessage('Already saved this talking point.')
+          return { ok: true, skipped: true }
+        }
+      }
+
+      const duplicateCandidate = findSimilarSavedPoint(payload.headline, payload.body, payload.sourceUrl)
+      if (duplicateCandidate && !force) {
+        setStatusMessage(`Possible duplicate of saved point “${duplicateCandidate.point.headline}”. Confirm to save anyway.`)
+        return {
+          ok: false,
+          requiresConfirmation: true,
+          duplicate: duplicateCandidate,
+        }
+      }
+
+      const originalHeadline = typeof point.title === 'string' && point.title.trim()
+        ? point.title.trim()
+        : payload.headline
+      const originalBody = [point.insight, point.implication]
+        .map((segment) => (typeof segment === 'string' ? segment.trim() : ''))
+        .filter(Boolean)
+        .join('\n\n') || payload.body
+
+      const pendingKey = buildGeneratedPointKey(point)
+      setPendingPointSaves((previous) => {
+        const next = new Set(previous)
+        next.add(pendingKey)
+        return next
+      })
+      try {
+        const resp = await createTalkingPoint({
+          ...payload,
+          originalHeadline,
+          originalBody,
+        })
+        if (resp?.item) {
+          setSavedPoints((previous) => {
+            const filtered = previous.filter((item) => item?.id !== resp.item.id)
+            return [resp.item, ...filtered]
+          })
+          setStatusMessage('Talking point saved.')
+          refreshFlowStats()
+          refreshTalkingPointMetrics()
+          return { ok: true, item: resp.item }
+        }
+        throw new Error('Save failed')
+      } catch (err) {
+        console.error('Failed to save talking point', err)
+        setStatusMessage(err.message || 'Failed to save talking point')
+        return { ok: false, error: err.message || 'Failed to save talking point' }
+      } finally {
+        setPendingPointSaves((previous) => {
+          const next = new Set(previous)
+          next.delete(pendingKey)
+          return next
+        })
+      }
+    },
+    [buildGeneratedPointKey, findSimilarSavedPoint, formatPointForSave, refreshFlowStats, refreshTalkingPointMetrics, savedPointUrlSet, savedPoints],
+  )
+
+  const handleSaveAllPoints = useCallback(async () => {
+    if (!briefing || !Array.isArray(briefing.points) || briefing.points.length === 0) {
+      return { ok: false, error: 'No talking points to save.' }
+    }
+    const unsaved = briefing.points.filter((point) => !isGeneratedPointSaved(point))
+    if (unsaved.length === 0) {
+      setStatusMessage('All talking points are already saved.')
+      return { ok: true, skipped: true }
+    }
+    setIsSavingAllPoints(true)
+    let savedCount = 0
+    for (const point of unsaved) {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await handleSaveGeneratedPoint(point, { force: true })
+      if (result.ok && !result.skipped) {
+        savedCount += 1
+      }
+    }
+    setIsSavingAllPoints(false)
+    if (savedCount > 0) {
+      setStatusMessage(
+        `Saved ${savedCount} talking point${savedCount === 1 ? '' : 's'}.`,
+      )
+    }
+    return { ok: true, savedCount }
+  }, [briefing, handleSaveGeneratedPoint, isGeneratedPointSaved])
+
+  const handleUpdateSavedPoint = useCallback(
+    async (id, updates = {}) => {
+      const numericId = Number(id)
+      if (!Number.isInteger(numericId) || numericId <= 0) {
+        return { ok: false, error: 'Invalid talking point id' }
+      }
+      const payload = { id: numericId }
+      if (typeof updates.headline === 'string') {
+        const trimmed = updates.headline.trim()
+        if (trimmed) payload.headline = trimmed
+      }
+      if (typeof updates.body === 'string') {
+        const trimmedBody = updates.body.trim()
+        if (trimmedBody) payload.body = trimmedBody
+      }
+      if (typeof updates.tags !== 'undefined') {
+        payload.tags = sanitizeTagList(updates.tags)
+      }
+
+      if (typeof updates.originalHeadline === 'string') {
+        payload.originalHeadline = updates.originalHeadline
+      }
+      if (typeof updates.originalBody === 'string') {
+        payload.originalBody = updates.originalBody
+      }
+
+      if (!payload.headline && !payload.body && !payload.tags && !payload.originalHeadline && !payload.originalBody) {
+        return { ok: false, error: 'Nothing to update' }
+      }
+
+      setPendingPointUpdates((previous) => {
+        const next = new Set(previous)
+        next.add(numericId)
+        return next
+      })
+      try {
+        const resp = await updateTalkingPoint(payload)
+        if (resp?.item) {
+          setSavedPoints((previous) =>
+            previous.map((item) => (item.id === numericId ? resp.item : item)),
+          )
+          setStatusMessage('Talking point updated.')
+          refreshTalkingPointMetrics()
+          return { ok: true, item: resp.item }
+        }
+        throw new Error('Update failed')
+      } catch (err) {
+        console.error('Failed to update talking point', err)
+        setStatusMessage(err.message || 'Failed to update talking point')
+        return { ok: false, error: err.message || 'Failed to update talking point' }
+      } finally {
+        setPendingPointUpdates((previous) => {
+          const next = new Set(previous)
+          next.delete(numericId)
+          return next
+        })
+      }
+    },
+    [refreshTalkingPointMetrics],
+  )
+
+  const handleDeleteSavedPoint = useCallback(
+    async (id) => {
+      const numericId = Number(id)
+      if (!Number.isInteger(numericId) || numericId <= 0) {
+        return { ok: false, error: 'Invalid talking point id' }
+      }
+      setPendingPointDeletes((previous) => {
+        const next = new Set(previous)
+        next.add(numericId)
+        return next
+      })
+      try {
+        await deleteTalkingPoint(numericId)
+        setSavedPoints((previous) => previous.filter((item) => item.id !== numericId))
+        setStatusMessage('Talking point deleted.')
+        refreshFlowStats()
+        refreshTalkingPointMetrics()
+        return { ok: true }
+      } catch (err) {
+        console.error('Failed to delete talking point', err)
+        setStatusMessage(err.message || 'Failed to delete talking point')
+        return { ok: false, error: err.message || 'Failed to delete talking point' }
+      } finally {
+        setPendingPointDeletes((previous) => {
+          const next = new Set(previous)
+          next.delete(numericId)
+          return next
+        })
+      }
+    },
+    [refreshFlowStats, refreshTalkingPointMetrics],
+  )
+
+  const isSavedPointUpdating = useCallback(
+    (id) => pendingPointUpdates.has(Number(id)),
+    [pendingPointUpdates],
+  )
+
+  const isSavedPointDeleting = useCallback(
+    (id) => pendingPointDeletes.has(Number(id)),
+    [pendingPointDeletes],
+  )
+
+  const ensureSourceDetails = useCallback(
+    async (sourceIds, { force = false } = {}) => {
+      if (!Array.isArray(sourceIds) || sourceIds.length === 0) return []
+      const numericIds = sourceIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0)
+      if (!numericIds.length) return []
+
+      const cache = evidenceCacheRef.current
+      const needsFetch = force ? numericIds : numericIds.filter((id) => !cache.has(id))
+      if (needsFetch.length) {
+        const resp = await enrichSourcesOnDemand({ sourceIds: needsFetch, force })
+        if (resp?.items && Array.isArray(resp.items)) {
+          let hasNewEnrichment = false
+          setEnrichedEvidence((previous) => {
+            const next = { ...previous }
+            resp.items.forEach((item) => {
+              const existing = previous[item.id]
+              next[item.id] = item
+              cache.set(item.id, item)
+              if (item?.hasContent && (!existing || !existing.hasContent)) {
+                hasNewEnrichment = true
+              }
+            })
+            return next
+          })
+          if (hasNewEnrichment) {
+            refreshFlowStats()
+          }
+        }
+      }
+      return numericIds.map((id) => cache.get(id) || null)
+    },
+    [enrichSourcesOnDemand, refreshFlowStats],
+  )
+
+  const requestEvidence = useCallback(
+    async (sourceIds, { force = false } = {}) => {
+      if (!Array.isArray(sourceIds) || sourceIds.length === 0) return
+      const numericIds = sourceIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0)
+      if (!numericIds.length) return
+
+      const cache = evidenceCacheRef.current
+      const missing = force ? numericIds : numericIds.filter((id) => !cache.has(id))
+      if (!missing.length) return
+
+      try {
+        setEvidenceStatusMessage(
+          `Pulling full content for ${missing.length} source${missing.length === 1 ? '' : 's'}…`,
+        )
+        await ensureSourceDetails(numericIds, { force })
+        setEvidenceStatusMessage('Full content cached for selected sources.')
+      } catch (err) {
+        console.error('Failed to enrich sources', err)
+        setEvidenceStatusMessage(err.message || 'Failed to cache full content.')
+      }
+    },
+    [ensureSourceDetails],
+  )
+
+  const handleViewSourceDetail = useCallback(
+    async (source) => {
+      if (!source?.id) return
+      const numericId = Number(source.id)
+      if (!Number.isInteger(numericId) || numericId <= 0) return
+
+      setActiveSourceId(numericId)
+      setIsSourceDrawerOpen(true)
+
+      const cache = evidenceCacheRef.current
+      const currentDetail = cache.get(numericId)
+      if (currentDetail?.hasContent) {
+        setSourceDrawerStatus(
+          currentDetail.enrichedAt
+            ? `Cached ${new Date(currentDetail.enrichedAt).toLocaleString()}`
+            : 'Content cached.',
+        )
+        return
+      }
+
+      setIsSourceDetailLoading(true)
+      setSourceDrawerStatus(currentDetail ? 'Fetching latest content…' : 'Pulling full content…')
+      try {
+        const forceFetch = currentDetail ? !currentDetail.hasContent : false
+        await ensureSourceDetails([numericId], { force: forceFetch })
+        const updated = cache.get(numericId)
+        if (updated?.hasContent) {
+          setSourceDrawerStatus(
+            updated.enrichedAt
+              ? `Cached ${new Date(updated.enrichedAt).toLocaleString()}`
+              : 'Content cached.',
+          )
+        } else {
+          setSourceDrawerStatus('Full content not cached yet. Use the fetch button to try again.')
+        }
+      } catch (err) {
+        console.error('Failed to load source detail', err)
+        setSourceDrawerStatus(err.message || 'Failed to load full content.')
+      } finally {
+        setIsSourceDetailLoading(false)
+      }
+    },
+    [ensureSourceDetails],
+  )
+
+  const handleCloseSourceDetail = useCallback(() => {
+    setIsSourceDrawerOpen(false)
+    setSourceDrawerStatus('')
+    setIsSourceDetailLoading(false)
+    setActiveSourceId(null)
+  }, [])
+
+  const handleFetchSourceFullContent = useCallback(async () => {
+    if (!activeSourceId) return
+    const numericId = Number(activeSourceId)
+    if (!Number.isInteger(numericId) || numericId <= 0) return
+
+    setIsSourceDetailLoading(true)
+    setSourceDrawerStatus('Fetching full content…')
+    try {
+      await ensureSourceDetails([numericId], { force: true })
+      const updated = evidenceCacheRef.current.get(numericId)
+      if (updated?.hasContent) {
+        setSourceDrawerStatus(
+          updated.enrichedAt
+            ? `Cached ${new Date(updated.enrichedAt).toLocaleString()}`
+            : 'Content cached.',
+        )
+      } else {
+        setSourceDrawerStatus('Unable to retrieve full content for this source.')
+      }
+    } catch (err) {
+      console.error('Failed to fetch full content', err)
+      setSourceDrawerStatus(err.message || 'Failed to fetch full content.')
+    } finally {
+      setIsSourceDetailLoading(false)
+    }
+  }, [activeSourceId, ensureSourceDetails])
+
 
   const handleTogglePinPoint = useCallback((point) => {
     if (!point || !point.url) return
@@ -971,15 +1623,38 @@ function App() {
     setPinnedPoints((previous) => previous.filter((item) => item && String(item.url) !== urlKey))
   }, [])
   const selectedUrlSet = useMemo(() => new Set(reportMeta?.selectedUrls || []), [reportMeta])
+  const selectedSourceIds = useMemo(
+    () => (Array.isArray(reportMeta?.selectedIds) ? reportMeta.selectedIds : []),
+    [reportMeta],
+  )
   const displayedSources = useMemo(() =>
     sources.map((s) => ({ ...s, selected: s.selected || selectedUrlSet.has(s.url) })),
   [sources, selectedUrlSet])
+  const activeSource = useMemo(() => {
+    if (!activeSourceId) return null
+    return displayedSources.find((item) => Number(item.id) === Number(activeSourceId)) || null
+  }, [activeSourceId, displayedSources])
+  const activeSourceDetail = activeSourceId ? enrichedEvidence[activeSourceId] || null : null
   const evidenceSources = useMemo(
-    () => displayedSources.filter((item) => item.selected),
-    [displayedSources],
+    () =>
+      displayedSources
+        .filter((item) => item.selected)
+        .map((item) => {
+          const enriched = item.id ? enrichedEvidence[item.id] : null
+          return {
+            ...item,
+            excerpt: enriched?.excerpt || '',
+            enrichedAt: enriched?.enrichedAt || null,
+            hasContent: enriched?.hasContent || false,
+          }
+        }),
+    [displayedSources, enrichedEvidence],
   )
-  const totalSourceCount = displayedSources.filter((s) => !s.error).length
   const selectedCount = evidenceSources.length
+  const evidenceDrawerMessage = evidenceStatusMessage || `${selectedCount} source${selectedCount === 1 ? '' : 's'} supporting these talking points.`
+  const filteredSourceCount = Array.isArray(reportMeta?.selectedIds) ? reportMeta.selectedIds.length : 0
+  const talkingPointsCount = Array.isArray(briefing?.points) ? briefing.points.length : 0
+  const savedPointsCount = flowStats.totalTalkingPoints || 0
   const pinnedUrlSet = useMemo(
     () =>
       new Set(
@@ -993,25 +1668,7 @@ function App() {
     () => new Set(excludedUrls.map((url) => String(url))),
     [excludedUrls],
   )
-  const resolvedDateRange = useMemo(() => resolveDateRange(), [config.startDate, config.endDate])
-  const statusMeta = useMemo(() => {
-    const meta = []
-    if (totalSourceCount > 0) {
-      meta.push(`${totalSourceCount} source${totalSourceCount === 1 ? '' : 's'} loaded`)
-    }
-    if (progress?.total > 0) {
-      meta.push(`${progress.loaded}/${progress.total} processed`)
-    }
-    if (resolvedDateRange) {
-      meta.push(`Window ${resolvedDateRange.start} → ${resolvedDateRange.end}`)
-    }
-    return meta
-  }, [progress?.loaded, progress?.total, resolvedDateRange, totalSourceCount])
-  const statusErrorText = error
-    ? `${errorStage ? `${errorStage} error: ` : ''}${error}`
-    : ''
-
-  const formattedEmail = briefing ? formatEmailHtml(config, briefing) : ''
+  const flowStatusLabel = statusLabels[status] || 'Status'
   const chatWidth = useMemo(
     () => `clamp(260px, ${(leftPanePercent * 100).toFixed(1)}vw, 640px)`,
     [leftPanePercent],
@@ -1034,14 +1691,25 @@ function App() {
     minWidth: 420,
   }), [])
   const handleOpenEvidence = () => {
-    if (selectedCount > 0) setIsEvidenceOpen(true)
+    if (selectedCount > 0) {
+      if (selectedSourceIds.length) {
+        requestEvidence(selectedSourceIds)
+      }
+      setIsEvidenceOpen(true)
+    }
   }
 
   const handleCloseEvidence = () => {
     setIsEvidenceOpen(false)
   }
 
-  const isComposeView = activeView === 'compose'
+  useEffect(() => {
+    if (selectedSourceIds.length) {
+      requestEvidence(selectedSourceIds)
+    }
+  }, [selectedSourceIds, requestEvidence])
+
+  const isTalkingPointsView = activeView === 'points'
 
   return (
     <div className="app-shell">
@@ -1050,32 +1718,40 @@ function App() {
         <nav className="workspace-nav" aria-label="Primary">
           <button
             type="button"
-            className={`nav-item${isComposeView ? ' is-active' : ''}`}
-            onClick={() => handleViewChange('compose')}
-          >
-            Compose
-          </button>
-          <button
-            type="button"
             className={`nav-item${activeView === 'sources' ? ' is-active' : ''}`}
             onClick={() => handleViewChange('sources')}
           >
             Sources
           </button>
+          <button
+            type="button"
+            className={`nav-item${isTalkingPointsView ? ' is-active' : ''}`}
+            onClick={() => handleViewChange('points')}
+          >
+            Talking Points
+          </button>
+          <button
+            type="button"
+            className={`nav-item nav-config${!isConfigCollapsed ? ' is-active' : ''}`}
+            onClick={handleToggleConfigCollapsed}
+            aria-label={isConfigCollapsed ? 'Show configuration panel' : 'Hide configuration panel'}
+            aria-pressed={!isConfigCollapsed}
+          >
+            <i aria-hidden="true" className="bi bi-gear" />
+            <span className="nav-label">Config</span>
+          </button>
         </nav>
-        <button
-          type="button"
-          className="header-toggle"
-          onClick={handleToggleConfigCollapsed}
-          aria-label={isConfigCollapsed ? 'Show configuration panel' : 'Hide configuration panel'}
-          aria-pressed={!isConfigCollapsed}
-        >
-          <i aria-hidden="true" className="bi bi-gear" />
-        </button>
       </header>
+      <FlowStatusBar
+        stats={flowStats}
+        filteredCount={filteredSourceCount}
+        talkingPointsCount={talkingPointsCount}
+        savedPointsCount={savedPointsCount}
+        statusLabel={flowStatusLabel}
+      />
       <main className={`app-main view-${activeView}${isConfigCollapsed ? ' config-collapsed' : ''}`}>
         <section className="workspace-column">
-          {isComposeView ? (
+          {isTalkingPointsView ? (
             <div className="compose-layout" ref={composeLayoutRef}>
               <div className="compose-main" style={leftPaneStyle} id="compose-controls-pane">
                 <ChatPane
@@ -1085,12 +1761,6 @@ function App() {
                   hasUserMessages={hasUserMessages}
                   hasBriefing={Boolean(briefing)}
                   width={chatWidth}
-                  statusLabel={statusLabels[status] || 'Status'}
-                  statusMessage={statusMessage}
-                  statusMeta={statusMeta}
-                  error={statusErrorText}
-                  onOpenEvidence={handleOpenEvidence}
-                  evidenceCount={selectedCount}
                 />
               </div>
               <div
@@ -1108,15 +1778,27 @@ function App() {
                 <span className="sr-only">Drag to resize briefing panels</span>
               </div>
               <div className="compose-side" style={rightPaneStyle} id="compose-preview-pane">
-                <EmailPreview
+                <TalkingPointsPanel
                   briefing={briefing}
-                  htmlContent={formattedEmail}
                   status={status}
                   pinnedUrlSet={pinnedUrlSet}
                   excludedUrlSet={excludedUrlSet}
                   onTogglePin={handleTogglePinPoint}
                   onToggleExclude={handleToggleExcludePoint}
                   isDrafting={isAiBusy}
+                  onOpenEvidence={handleOpenEvidence}
+                  evidenceCount={selectedCount}
+                  onSavePoint={handleSaveGeneratedPoint}
+                  onSaveAll={handleSaveAllPoints}
+                  isPointSaved={isGeneratedPointSaved}
+                  isPointSaving={isSavingGeneratedPoint}
+                  isSavingAll={isSavingAllPoints}
+                  savedPoints={savedPoints}
+                  savedPointsLoading={isLoadingSavedPoints}
+                  onUpdateSavedPoint={handleUpdateSavedPoint}
+                  onDeleteSavedPoint={handleDeleteSavedPoint}
+                  isSavedPointUpdating={isSavedPointUpdating}
+                  isSavedPointDeleting={isSavedPointDeleting}
                 />
               </div>
             </div>
@@ -1130,6 +1812,7 @@ function App() {
                 errorStage={errorStage}
                 onUpdateDatabase={handleIngestToLibrary}
                 onRemoveSource={handleRemoveSource}
+                onViewSource={handleViewSourceDetail}
                 isFetching={isFetching}
                 isIngesting={isIngesting}
                 isRunningAi={isAiBusy}
@@ -1151,10 +1834,19 @@ function App() {
         saveMessage={configSaveMessage}
       />
       <EvidenceDrawer
-        open={isComposeView && isEvidenceOpen}
+        open={isTalkingPointsView && isEvidenceOpen}
         onClose={handleCloseEvidence}
         sources={evidenceSources}
-        statusMessage={`${selectedCount} source${selectedCount === 1 ? '' : 's'} supporting these talking points.`}
+        statusMessage={evidenceDrawerMessage}
+      />
+      <SourceDetailDrawer
+        open={activeView === 'sources' && isSourceDrawerOpen && Boolean(activeSource)}
+        onClose={handleCloseSourceDetail}
+        source={activeSource}
+        detail={activeSourceDetail}
+        statusMessage={sourceDrawerStatus}
+        onFetchFullContent={handleFetchSourceFullContent}
+        isFetching={isSourceDetailLoading}
       />
     </div>
   )

@@ -71,14 +71,9 @@ export async function fetchAllSources(config, callbacks = {}) {
     throw new Error('Enable at least one source before generating a briefing.')
   }
 
-  const expectedTotal =
-    enabledSources.reduce((total, [, settings]) => total + (settings.max || 0), 0) ||
-    enabledSources.length * 3
-
-  onProgress?.({ loaded: 0, total: expectedTotal })
+  onProgress?.({ loaded: 0, total: 0 })
   onStatus?.('Fetching sources...')
 
-  let loadedCount = 0
   const aggregated = []
 
   await Promise.all(
@@ -87,20 +82,20 @@ export async function fetchAllSources(config, callbacks = {}) {
         onStatus?.(`Fetching ${settings.label}...`)
         const batch = await fetchSourceByKey(key, settings, config)
         const filteredBatch = enforceDateRange(batch, effectiveRange)
-        aggregated.push(...filteredBatch)
-        loadedCount += filteredBatch.length
-        if (filteredBatch.length) {
-          onBatch?.(filteredBatch)
-        }
+        const withFeedKey = filteredBatch.map((item) => ({
+          ...item,
+          feedKey: key,
+          feedType: SOURCE_METADATA[key]?.type || item.sourceType || 'Unknown',
+        }))
+        aggregated.push(...withFeedKey)
+        if (withFeedKey.length) onBatch?.(withFeedKey)
       } catch (error) {
         console.error(`Failed to fetch ${key}`, error)
         const errorItem = buildErrorSource(key, settings, error)
         aggregated.push(errorItem)
-        loadedCount += 1
         onBatch?.([errorItem])
-      } finally {
-        onProgress?.({ loaded: Math.min(loadedCount, expectedTotal), total: expectedTotal })
       }
+      onProgress?.({ loaded: aggregated.length, total: aggregated.length })
     }),
   )
 
@@ -258,7 +253,7 @@ async function fetchRssFeed(url, maxItems, sourceLabel) {
     title: cleanText(item.querySelector('title')?.textContent) ?? 'Untitled',
     url: item.querySelector('link')?.textContent ?? '#',
     source: sourceLabel,
-    date: item.querySelector('pubDate')?.textContent ?? '',
+    date: normalizeDateString(item.querySelector('pubDate')?.textContent),
     description: cleanText(item.querySelector('description')?.textContent) ?? '',
     sourceType: 'RSS',
     selected: false,
@@ -287,7 +282,7 @@ async function fetchArxivFeed(maxItems, sourceLabel) {
     title: cleanText(entry.querySelector('title')?.textContent) ?? 'Untitled',
     url: entry.querySelector('id')?.textContent ?? '#',
     source: sourceLabel,
-    date: entry.querySelector('published')?.textContent ?? '',
+    date: normalizeDateString(entry.querySelector('published')?.textContent),
     description: cleanText(entry.querySelector('summary')?.textContent) ?? '',
     sourceType: 'ArXiv',
     selected: false,
@@ -359,6 +354,13 @@ function generateId(prefix) {
 function cleanText(value) {
   if (!value) return ''
   return value.replace(/<!\[CDATA\[|\]\]>/g, '').trim()
+}
+
+function normalizeDateString(value) {
+  if (!value) return ''
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return String(value)
+  return parsed.toISOString()
 }
 
 async function fetchItunesPodcast(sourceKey, maxItems) {

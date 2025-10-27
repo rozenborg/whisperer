@@ -6,6 +6,7 @@ function SourcesTable({
   errorStage,
   onUpdateDatabase,
   onRemoveSource,
+  onViewSource,
   isFetching,
   isIngesting,
   isRunningAi,
@@ -13,16 +14,18 @@ function SourcesTable({
 }) {
   const progressLabel =
     progress.total > 0
-      ? `Loaded ${progress.loaded} of ~${progress.total}`
+      ? progress.loaded === progress.total
+        ? `Loaded ${progress.loaded}`
+        : `Loaded ${progress.loaded} of ${progress.total}`
       : `Loaded ${sources.length}`
 
   const statusCopy = {
     idle: 'Click Add Sources to pull the latest items into your library.',
     fetching: 'Adding sources. Items will appear here as they load.',
-    fetched: 'Sources updated. Run AI to curate and build the briefing.',
+    fetched: 'Sources updated. Run AI to curate and draft talking points.',
     curating: 'AI is selecting the most relevant sources.',
-    generating: 'Building the executive briefing.',
-    done: 'Review the selected sources before sending the email.',
+    generating: 'Drafting executive talking points.',
+    done: 'Review the selected sources supporting your talking points.',
   }
 
   const updateDisabled = !hasEnabledSource || isFetching || isRunningAi || isIngesting
@@ -31,7 +34,7 @@ function SourcesTable({
     if (source.error) {
       return (
         <tr key={source.id} className="row-error">
-          <td colSpan={5}>
+          <td colSpan={4}>
             <div className="error-chip">
               <span className="error-source">{source.source}</span>
               <span>{source.error}</span>
@@ -63,17 +66,27 @@ function SourcesTable({
       }
     }
 
+    const handleView = () => {
+      if (typeof onViewSource === 'function') {
+        onViewSource(source)
+      }
+    }
+
     return (
       <tr key={source.id} data-selected={source.selected ? 'true' : 'false'}>
         <td>
           <a href={source.url} target="_blank" rel="noreferrer">
             {source.title}
           </a>
+          {source.selected && <span className="chip selected">Selected</span>}
         </td>
         <td>{source.source}</td>
         <td>{readableDate}</td>
-        <td>{source.selected ? 'Selected' : '—'}</td>
         <td className="actions-cell">
+          <button type="button" className="icon-button" onClick={handleView}>
+            <i className="bi bi-journal-text" aria-hidden="true" />
+            <span className="sr-only">View full article</span>
+          </button>
           {canDelete ? (
             <button type="button" className="icon-button danger" onClick={handleDelete}>
               <i className="bi bi-trash" aria-hidden="true" />
@@ -131,7 +144,6 @@ function SourcesTable({
                 <th>Title</th>
                 <th>Source</th>
                 <th>Date</th>
-                <th>AI</th>
                 <th aria-hidden="true" />
               </tr>
             </thead>

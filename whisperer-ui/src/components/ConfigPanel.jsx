@@ -21,23 +21,24 @@ function ConfigPanel({
 
     Object.entries(config.sources).forEach(([key, settings]) => {
       const metadata = SOURCE_METADATA[key]
+      const displayLabel = metadata?.label || settings.label || key
       if (metadata?.type === 'Web') {
-        webItems.push({ key, settings })
+        webItems.push({ key, settings, label: displayLabel })
         return
       }
 
       const bucket = metadata?.type === 'Podcast' ? 'podcasts' : 'feeds'
-      groups[bucket].items.push({ key, settings })
+      groups[bucket].items.push({ key, settings, label: displayLabel })
     })
 
     return {
       grouped: Object.values(groups)
         .map((group) => ({
           ...group,
-          items: group.items.sort((a, b) => a.settings.label.localeCompare(b.settings.label)),
+          items: group.items.sort((a, b) => a.label.localeCompare(b.label)),
         }))
         .filter((group) => group.items.length),
-      web: webItems.sort((a, b) => a.settings.label.localeCompare(b.settings.label)),
+      web: webItems.sort((a, b) => a.label.localeCompare(b.label)),
     }
   }, [config.sources])
 
@@ -55,7 +56,7 @@ function ConfigPanel({
         <header className="config-drawer-header">
           <div>
             <h2>Settings</h2>
-            <p>Choose feeds and podcasts, then compose your briefing.</p>
+            <p>Choose feeds and podcasts, then generate your talking points.</p>
           </div>
           <button type="button" className="config-drawer-close" onClick={onClose} aria-label="Close settings">
             <i className="bi bi-x-lg" aria-hidden="true" />
@@ -119,14 +120,14 @@ function ConfigPanel({
                 <div key={group.label} className="source-group">
                   <span className="source-group-title">{group.label}</span>
                   <div className="source-list">
-                    {group.items.map(({ key, settings }) => (
+                    {group.items.map(({ key, settings, label }) => (
                       <label key={key} className="source-item">
                         <input
                           type="checkbox"
                           checked={settings.enabled}
                           onChange={() => onToggleSource(key)}
                         />
-                        <span>{settings.label}</span>
+                        <span>{label}</span>
                       </label>
                     ))}
                   </div>
@@ -142,14 +143,14 @@ function ConfigPanel({
                 Enable curated web search integrations to broaden coverage. Results may include mixed quality sources.
               </p>
               <div className="source-list">
-                {web.map(({ key, settings }) => (
+                {web.map(({ key, settings, label }) => (
                   <label key={key} className="source-item">
                     <input
                       type="checkbox"
                       checked={settings.enabled}
                       onChange={() => onToggleSource(key)}
                     />
-                    <span>{settings.label}</span>
+                    <span>{label}</span>
                   </label>
                 ))}
               </div>
