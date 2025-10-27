@@ -85,7 +85,8 @@ try {
 }
 
 try {
-  db.prepare("ALTER TABLE talking_points ADD COLUMN tags TEXT DEFAULT '[]'").run()
+  db.prepare("ALTER TABLE talking_points ADD COLUMN tags TEXT").run()
+  db.prepare("UPDATE talking_points SET tags = '[]' WHERE tags IS NULL").run()
 } catch (err) {
   if (!String(err.message || '').includes('duplicate column name')) {
     console.warn('Failed to ensure tags column on talking_points table', err.message)
@@ -101,7 +102,8 @@ try {
 }
 
 try {
-  db.prepare("ALTER TABLE talking_points ADD COLUMN saved_at TEXT DEFAULT (datetime('now'))").run()
+  db.prepare('ALTER TABLE talking_points ADD COLUMN saved_at TEXT').run()
+  db.prepare("UPDATE talking_points SET saved_at = datetime('now') WHERE saved_at IS NULL").run()
 } catch (err) {
   if (!String(err.message || '').includes('duplicate column name')) {
     console.warn('Failed to ensure saved_at column on talking_points table', err.message)
@@ -298,7 +300,7 @@ SELECT * FROM contents WHERE source_id IN (SELECT value FROM json_each(@idsJson)
 `)
 
 export const upsertContentStmt = db.prepare(`
-INSERT INTO contents (source_id, content_text, transcript_url, transcript_text, enriched_at)
+INSERT INTO contents (source_id, content_text, transcript_url, transcript_text, snippet_text, enriched_at)
 VALUES (@source_id, @content_text, @transcript_url, @transcript_text, @snippet_text, datetime('now'))
 ON CONFLICT(source_id) DO UPDATE SET
   content_text = COALESCE(excluded.content_text, contents.content_text),
