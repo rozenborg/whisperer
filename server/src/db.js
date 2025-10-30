@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sources (
   published_at TEXT,
   description TEXT,
   origin_key TEXT,
+  starred_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -74,6 +75,15 @@ CREATE TABLE IF NOT EXISTS talking_points (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS source_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL UNIQUE,
+  points_json TEXT NOT NULL,
+  generated_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
 `)
 
 try {
@@ -107,6 +117,22 @@ try {
 } catch (err) {
   if (!String(err.message || '').includes('duplicate column name')) {
     console.warn('Failed to ensure saved_at column on talking_points table', err.message)
+  }
+}
+
+try {
+  db.prepare('ALTER TABLE sources ADD COLUMN starred_at TEXT').run()
+} catch (err) {
+  if (!String(err.message || '').includes('duplicate column name')) {
+    console.warn('Failed to ensure starred_at column on sources table', err.message)
+  }
+}
+
+try {
+  db.prepare('ALTER TABLE sources ADD COLUMN hidden_at TEXT').run()
+} catch (err) {
+  if (!String(err.message || '').includes('duplicate column name')) {
+    console.warn('Failed to ensure hidden_at column on sources table', err.message)
   }
 }
 
@@ -154,7 +180,8 @@ LIMIT @limit
 export const selectSourcesByDateStmt = db.prepare(`
 SELECT * FROM sources
 WHERE
-  (
+  hidden_at IS NULL
+  AND (
     @start IS NULL
     OR published_at IS NULL
     OR datetime(published_at) >= datetime(@start)
@@ -183,6 +210,7 @@ SELECT s.*, bm25(sources_fts) AS bm25
 FROM sources_fts
 JOIN sources s ON s.id = sources_fts.rowid
 WHERE sources_fts MATCH @match
+  AND s.hidden_at IS NULL
   AND (
     @start IS NULL
     OR s.published_at IS NULL
@@ -207,6 +235,30 @@ UPDATE reports SET reasoning=@reasoning, outline_json=@outline_json, final_point
 `)
 
 export const deleteSourceStmt = db.prepare('DELETE FROM sources WHERE id = ?')
+
+export const updateSourceStarStmt = db.prepare(`
+UPDATE sources
+SET starred_at = datetime('now'), updated_at = datetime('now')
+WHERE id = @id
+`)
+
+export const clearSourceStarStmt = db.prepare(`
+UPDATE sources
+SET starred_at = NULL, updated_at = datetime('now')
+WHERE id = @id
+`)
+
+export const updateSourceHideStmt = db.prepare(`
+UPDATE sources
+SET hidden_at = datetime('now'), updated_at = datetime('now')
+WHERE id = @id
+`)
+
+export const clearSourceHideStmt = db.prepare(`
+UPDATE sources
+SET hidden_at = NULL, updated_at = datetime('now')
+WHERE id = @id
+`)
 
 export const insertTalkingPointStmt = db.prepare(`
 INSERT INTO talking_points (source_id, headline, body, related_source_ids, tags, edit_distance, saved_at)
@@ -270,6 +322,21 @@ FROM talking_points tp
 LEFT JOIN sources s ON s.id = tp.source_id
 WHERE tp.id = ?
 `)
+
+export const selectSourceNoteBySourceIdStmt = db.prepare(`
+SELECT * FROM source_notes WHERE source_id = ?
+`)
+
+export const upsertSourceNoteStmt = db.prepare(`
+INSERT INTO source_notes (source_id, points_json, generated_at, updated_at)
+VALUES (@source_id, @points_json, datetime('now'), datetime('now'))
+ON CONFLICT(source_id) DO UPDATE SET
+  points_json = excluded.points_json,
+  generated_at = excluded.generated_at,
+  updated_at = datetime('now')
+`)
+
+export const deleteSourceNoteStmt = db.prepare('DELETE FROM source_notes WHERE source_id = ?')
 
 export const selectTalkingPointTagCountsStmt = db.prepare(`
 SELECT

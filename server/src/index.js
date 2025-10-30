@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
-import { db, upsertSourceStmt, withTransaction, selectRecentSourcesStmt, selectSourcesByDateStmt, insertReportStmt, updateReportStmt, selectSourcesByIdsStmt, selectSourceByUrlUniqueStmt, deleteSourceStmt, selectContentsBySourceIdsStmt, upsertContentStmt, selectSourcesByFtsStmt, selectEmbeddingsBySourceIdsStmt, upsertEmbeddingStmt, countSourcesStmt, countEnrichedSourcesStmt, countReportsStmt, insertTalkingPointStmt, updateTalkingPointStmt, deleteTalkingPointStmt, selectTalkingPointsStmt, selectTalkingPointByIdStmt, selectTalkingPointTagCountsStmt, selectTalkingPointDailyCountsStmt, countTalkingPointsStmt } from './db.js'
+import { db, upsertSourceStmt, withTransaction, selectRecentSourcesStmt, selectSourcesByDateStmt, insertReportStmt, updateReportStmt, selectSourcesByIdsStmt, selectSourceByUrlUniqueStmt, deleteSourceStmt, selectContentsBySourceIdsStmt, upsertContentStmt, selectSourcesByFtsStmt, selectEmbeddingsBySourceIdsStmt, upsertEmbeddingStmt, countSourcesStmt, countEnrichedSourcesStmt, countReportsStmt, updateSourceStarStmt, clearSourceStarStmt, updateSourceHideStmt, clearSourceHideStmt, insertTalkingPointStmt, updateTalkingPointStmt, deleteTalkingPointStmt, selectTalkingPointsStmt, selectTalkingPointByIdStmt, selectSourceNoteBySourceIdStmt, upsertSourceNoteStmt, selectTalkingPointTagCountsStmt, selectTalkingPointDailyCountsStmt, countTalkingPointsStmt } from './db.js'
 import { normalizeUrl, urlFingerprint } from './urlUtils.js'
 import { callClaude } from './anthropic.js'
 import { applyFeedPolicies, policyForFeedKey } from './feeds.js'
@@ -403,6 +403,84 @@ app.delete('/api/sources/:id', (req, res) => {
     const info = deleteSourceStmt.run(id)
     if (info.changes === 0) return res.status(404).json({ error: 'Source not found' })
     res.json({ ok: true })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/sources/:id/star', async (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid source id' })
+
+    const source = getSourceById(id)
+    if (!source) return res.status(404).json({ error: 'Source not found' })
+
+    updateSourceStarStmt.run({ id })
+
+    await enrichSourcesIfNeeded([source], { force: true })
+
+    const note = await generateSourceNoteForSource(source)
+    if (!note || !Array.isArray(note.points) || note.points.length === 0) {
+      return res.status(502).json({ error: 'Note generation failed' })
+    }
+
+    upsertSourceNoteStmt.run({
+      source_id: id,
+      points_json: JSON.stringify(note.points),
+    })
+
+    res.json({ ok: true, starredAt: new Date().toISOString(), note })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/sources/:id/star', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid source id' })
+    clearSourceStarStmt.run({ id })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/sources/:id/hide', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid source id' })
+    updateSourceHideStmt.run({ id })
+    res.json({ ok: true, hiddenAt: new Date().toISOString() })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/sources/:id/hide', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid source id' })
+    clearSourceHideStmt.run({ id })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/sources/:id/note', (req, res) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid source id' })
+    const row = selectSourceNoteBySourceIdStmt.get(id)
+    if (!row) return res.status(404).json({ error: 'Note not found' })
+    res.json({ ok: true, note: mapSourceNoteRow(row) })
   } catch (e) {
     console.error(e)
     res.status(500).json({ error: e.message })
@@ -818,6 +896,32 @@ function mapTalkingPointRow(row) {
   }
 }
 
+function mapSourceNoteRow(row) {
+  if (!row) return null
+  let points = []
+  try {
+    const parsed = JSON.parse(row.points_json)
+    if (Array.isArray(parsed)) {
+      points = parsed
+    }
+  } catch (err) {
+    console.warn('Failed to parse source note JSON', err.message)
+  }
+  return {
+    sourceId: row.source_id,
+    points,
+    generatedAt: row.generated_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function getSourceById(id) {
+  const numericId = Number(id)
+  if (!Number.isInteger(numericId) || numericId <= 0) return null
+  const rows = selectSourcesByIdsStmt.all({ idsJson: JSON.stringify([numericId]) })
+  return Array.isArray(rows) && rows.length ? rows[0] : null
+}
+
 function normalizeDateParam(value, endOfDay) {
   if (!value) return null
   const parsed = new Date(value)
@@ -830,19 +934,37 @@ function normalizeDateParam(value, endOfDay) {
   return parsed.toISOString()
 }
 
+function sanitizeTag(value) {
+  if (!value || typeof value !== 'string') return ''
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 32)
+}
+
+function clampNumber(value, min, max, fallback = 0) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  if (numeric < min) return min
+  if (numeric > max) return max
+  return numeric
+}
+
 function sanitizeTagList(value) {
   if (value === null || typeof value === 'undefined') return []
   if (Array.isArray(value)) {
     return value
-      .map((tag) => String(tag).trim().toLowerCase())
-      .filter((tag) => tag && tag.length <= 40)
+      .map((tag) => sanitizeTag(String(tag)))
+      .filter(Boolean)
       .slice(0, 8)
   }
   if (typeof value === 'string') {
     return value
       .split(/[,\s]+/)
-      .map((tag) => tag.trim().toLowerCase())
-      .filter((tag) => tag && tag.length <= 40)
+      .map((tag) => sanitizeTag(tag))
+      .filter(Boolean)
       .slice(0, 8)
   }
   return []
@@ -1369,6 +1491,90 @@ function buildPromptSnippet(source, contentRow) {
     source?.description ||
     ''
   return truncate(base, 640)
+}
+
+async function generateSourceNoteForSource(source) {
+  if (!source || !source.id) throw new Error('Source missing id')
+  const contentsMap = getContentsMap([source.id])
+  const entry = buildPromptEntry(source, contentsMap.get(source.id) || null, 0)
+  if (!entry.snippet) {
+    throw new Error('Source has no cached content for note generation')
+  }
+
+  const prompt = buildSourceNotePrompt(entry)
+  let parsed = null
+  const attempts = 3
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await callClaude({
+        model: MODEL,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        max_tokens: 900,
+      })
+      parsed = extractJson(response)
+      const points = normalizeSourceNotePayload(parsed, entry)
+      if (points && points.length) {
+        return {
+          sourceId: entry.id,
+          generatedAt: new Date().toISOString(),
+          points,
+        }
+      }
+    } catch (err) {
+      console.warn('Source note generation attempt failed', { sourceId: source.id, attempt: attempt + 1, error: err.message })
+    }
+  }
+  throw new Error('Failed to generate source note')
+}
+
+function buildSourceNotePrompt(entry) {
+  const lines = [
+    `Source title: ${entry.title}`,
+    entry.source ? `Publisher: ${entry.source}` : null,
+    entry.type ? `Type: ${entry.type}` : null,
+    `URL: ${entry.url || 'Unknown'}`,
+    '',
+    'Content excerpt:',
+    entry.snippet,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  return `You are extracting executive talking points from a single source. The audience is Fortune 100 leaders making strategic decisions about AI. Be factual, concise, and avoid hype.\n\nFor this source, identify 1-4 high-signal talking points. Each must include:\n- hook: 6-12 word headline tuned for executives (no marketing fluff, include whether to read or listen).\n- type: Article|Podcast|Research.\n- insight: exactly 2 sentences summarizing the core takeaway with concrete detail.\n- implication: 1-2 sentences focused on executive action, risk, competitive move, or compliance.\n- supportingFacts: 1-3 short bullet statements quoting or paraphrasing the source (cite numbers/quotes when available).\n- tags: 1-4 lowercase tags (strategy, risk, compliance, vendor, economics, policy, etc.).\n- confidence: number 0-1 reflecting signal quality and clarity.\n\nReturn ONLY JSON:\n{ "points": [{"hook":"...","type":"Article","insight":"...","implication":"...","supportingFacts":["..."],"tags":["strategy"],"confidence":0.8}] }\n\nSource context:\n${lines}`
+}
+
+function normalizeSourceNotePayload(payload, entry) {
+  if (!payload || typeof payload !== 'object') return []
+  const list = Array.isArray(payload.points) ? payload.points : []
+  if (!list.length) return []
+  const results = []
+  for (const raw of list.slice(0, 4)) {
+    const hook = sanitizeSentence(raw?.hook, 16)
+    const insight = sanitizeParagraph(raw?.insight)
+    const implication = sanitizeParagraph(raw?.implication)
+    if (!hook || !insight || !implication) continue
+    const type = raw?.type && typeof raw.type === 'string' ? raw.type : entry.type || 'Article'
+    const supportingFacts = Array.isArray(raw?.supportingFacts)
+      ? raw.supportingFacts.map((fact) => sanitizeParagraph(fact)).filter(Boolean).slice(0, 3)
+      : []
+    if (!supportingFacts.length) continue
+    const tags = Array.isArray(raw?.tags)
+      ? raw.tags.map((tag) => sanitizeTag(tag)).filter(Boolean).slice(0, 6)
+      : []
+    const confidence = clampNumber(raw?.confidence, 0, 1, 0.7)
+    results.push({
+      hook,
+      type,
+      insight,
+      implication,
+      supportingFacts,
+      tags,
+      confidence,
+      url: entry.url || null,
+      sourceId: entry.id,
+    })
+  }
+  return results
 }
 
 function determinePointType(rawType) {

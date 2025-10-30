@@ -1,18 +1,14 @@
 function FlowStatusBar({
   stats = {},
-  filteredCount,
-  talkingPointsCount,
   savedPointsCount,
   statusLabel,
 }) {
   const items = [
     { key: 'sources', label: 'Sources', value: stats.totalSources ?? 0 },
     { key: 'enriched', label: 'Enriched', value: stats.enrichedSources ?? 0 },
-    { key: 'filtered', label: 'Filtered', value: filteredCount ?? 0 },
-    { key: 'points', label: 'Generated', value: talkingPointsCount ?? 0 },
     {
       key: 'saved',
-      label: 'Saved Points',
+      label: 'Saved Talking Points',
       value: savedPointsCount ?? stats.totalTalkingPoints ?? 0,
     },
   ]

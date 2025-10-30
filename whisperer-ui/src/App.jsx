@@ -3,7 +3,6 @@ import ChatPane from './components/ChatPane.jsx'
 import ConfigPanel from './components/ConfigPanel.jsx'
 import SourcesTable from './components/SourcesTable.jsx'
 import EvidenceDrawer from './components/EvidenceDrawer.jsx'
-import SourceDetailDrawer from './components/SourceDetailDrawer.jsx'
 import FlowStatusBar from './components/FlowStatusBar.jsx'
 import TalkingPointsPanel from './components/TalkingPointsPanel.jsx'
 import { fetchAllSources } from './services/fetchSources.js'
@@ -20,6 +19,11 @@ import {
   updateTalkingPoint,
   deleteTalkingPoint,
   fetchTalkingPointMetrics,
+  starSource,
+  unstarSource,
+  hideSource,
+  unhideSource,
+  fetchSourceNote,
 } from './services/backend.js'
 
 const MAX_PER_RUN = Number(import.meta.env.VITE_MAX_SOURCES_PER_RUN || 200)
@@ -190,6 +194,10 @@ function normalizeStoredSource(item) {
     description: item.description || '',
     sourceType: item.source_type || 'Library',
     selected: false,
+    starredAt: item.starred_at || null,
+    starred: Boolean(item.starred_at),
+    hiddenAt: item.hidden_at || null,
+    hidden: Boolean(item.hidden_at),
   }
 }
 const todayIso = new Date().toISOString().slice(0, 10)
@@ -267,18 +275,18 @@ function App() {
   const [excludedUrls, setExcludedUrls] = useState([])
   const [savedPoints, setSavedPoints] = useState([])
   const [isLoadingSavedPoints, setIsLoadingSavedPoints] = useState(false)
+  const [sourceNotes, setSourceNotes] = useState(() => new Map())
+  const [pendingStarIds, setPendingStarIds] = useState(() => new Set())
+  const [noteLoadingIds, setNoteLoadingIds] = useState(() => new Set())
   const [pendingPointSaves, setPendingPointSaves] = useState(() => new Set())
   const [pendingPointUpdates, setPendingPointUpdates] = useState(() => new Set())
+  const [pendingHideIds, setPendingHideIds] = useState(() => new Set())
   const [pendingPointDeletes, setPendingPointDeletes] = useState(() => new Set())
   const [isSavingAllPoints, setIsSavingAllPoints] = useState(false)
   const [talkingPointMetrics, setTalkingPointMetrics] = useState(null)
   const [isMetricsLoading, setIsMetricsLoading] = useState(false)
   const [enrichedEvidence, setEnrichedEvidence] = useState({})
   const [evidenceStatusMessage, setEvidenceStatusMessage] = useState('')
-  const [activeSourceId, setActiveSourceId] = useState(null)
-  const [isSourceDrawerOpen, setIsSourceDrawerOpen] = useState(false)
-  const [sourceDrawerStatus, setSourceDrawerStatus] = useState('')
-  const [isSourceDetailLoading, setIsSourceDetailLoading] = useState(false)
   const [flowStats, setFlowStats] = useState({ totalSources: 0, enrichedSources: 0, totalReports: 0, totalTalkingPoints: 0 })
   const [leftPanePercent, setLeftPanePercent] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -444,9 +452,6 @@ function App() {
     if (activeView !== 'points') {
       setIsEvidenceOpen(false)
     }
-    if (activeView !== 'sources') {
-      setIsSourceDrawerOpen(false)
-    }
   }, [activeView])
 
   useEffect(() => {
@@ -488,15 +493,6 @@ function App() {
     if (!hasSelected) setIsEvidenceOpen(false)
   }, [isEvidenceOpen, sources])
 
-  useEffect(() => {
-    if (!activeSourceId) return
-    const exists = sources.some((item) => Number(item?.id) === Number(activeSourceId))
-    if (!exists) {
-      setIsSourceDrawerOpen(false)
-      setActiveSourceId(null)
-      setSourceDrawerStatus('')
-    }
-  }, [sources, activeSourceId])
 
   useEffect(() => {
     if (!briefing || !Array.isArray(briefing.points) || briefing.points.length === 0) {
@@ -914,12 +910,219 @@ function App() {
         setStatusMessage('Source removed from briefing and database.')
       }
       refreshFlowStats()
+      setSourceNotes((previous) => {
+        if (!previous.has(numericId)) return previous
+        const next = new Map(previous)
+        next.delete(numericId)
+        return next
+      })
     } catch (err) {
       console.error(err)
       setError(err.message || 'Failed to remove source')
       setErrorStage('delete')
     }
   }
+
+  const handleToggleStarSource = useCallback(
+    async (source, nextStarred) => {
+      if (!source?.id) return
+      const numericId = Number(source.id)
+      if (!Number.isInteger(numericId) || numericId <= 0) return
+
+      setPendingStarIds((previous) => {
+        const next = new Set(previous)
+        next.add(numericId)
+        return next
+      })
+
+      try {
+        if (nextStarred) {
+          const resp = await starSource(numericId)
+          const starredAt = resp?.starredAt || new Date().toISOString()
+          const note = resp?.note || null
+          setSources((previous) =>
+            previous.map((item) =>
+              Number(item.id) === numericId
+                ? { ...item, starred: true, starredAt }
+                : item,
+            ),
+          )
+          if (note && Array.isArray(note.points)) {
+            setSourceNotes((previous) => {
+              const next = new Map(previous)
+              next.set(numericId, note)
+              return next
+            })
+          }
+          setStatusMessage('Talking points generated for starred source.')
+        } else {
+          await unstarSource(numericId)
+          setSources((previous) =>
+            previous.map((item) =>
+              Number(item.id) === numericId
+                ? { ...item, starred: false, starredAt: null }
+                : item,
+            ),
+          )
+          setStatusMessage('Source unstarred.')
+        }
+      } catch (err) {
+        console.error('Failed to toggle source star', err)
+        setStatusMessage(err.message || 'Failed to update star status.')
+      } finally {
+        setPendingStarIds((previous) => {
+          const next = new Set(previous)
+          next.delete(numericId)
+          return next
+        })
+      }
+    },
+    [starSource, unstarSource],
+  )
+
+  const handleToggleHideSource = useCallback(
+    async (source, nextHidden) => {
+      if (!source?.id) return
+      const numericId = Number(source.id)
+      if (!Number.isInteger(numericId) || numericId <= 0) return
+
+      setPendingHideIds((previous) => {
+        const next = new Set(previous)
+        next.add(numericId)
+        return next
+      })
+
+      try {
+        if (nextHidden) {
+          const resp = await hideSource(numericId)
+          const hiddenAt = resp?.hiddenAt || new Date().toISOString()
+          setSources((previous) =>
+            previous.map((item) =>
+              Number(item.id) === numericId
+                ? { ...item, hidden: true, hiddenAt }
+                : item,
+            ),
+          )
+          setStatusMessage('Source hidden. It will not be used for AI selection.')
+        } else {
+          await unhideSource(numericId)
+          setSources((previous) =>
+            previous.map((item) =>
+              Number(item.id) === numericId
+                ? { ...item, hidden: false, hiddenAt: null }
+                : item,
+            ),
+          )
+          setStatusMessage('Source unhidden.')
+        }
+      } catch (err) {
+        console.error('Failed to toggle source hide', err)
+        setStatusMessage(err.message || 'Failed to update hide status.')
+      } finally {
+        setPendingHideIds((previous) => {
+          const next = new Set(previous)
+          next.delete(numericId)
+          return next
+        })
+      }
+    },
+    [hideSource, unhideSource],
+  )
+
+  const loadSourceNote = useCallback(
+    async (sourceId, { force = false } = {}) => {
+      const numericId = Number(sourceId)
+      if (!Number.isInteger(numericId) || numericId <= 0) return null
+      if (!force && sourceNotes.has(numericId)) {
+        return sourceNotes.get(numericId)
+      }
+
+      setNoteLoadingIds((previous) => {
+        const next = new Set(previous)
+        next.add(numericId)
+        return next
+      })
+      try {
+        const resp = await fetchSourceNote(numericId)
+        if (resp?.note) {
+          setSourceNotes((previous) => {
+            const next = new Map(previous)
+            next.set(numericId, resp.note)
+            return next
+          })
+          return resp.note
+        }
+        return null
+      } catch (err) {
+        const message = err?.message || ''
+        if (!message.includes('404')) {
+          console.error('Failed to load source note', err)
+          setStatusMessage(message || 'Failed to load source talking points.')
+        }
+        return null
+      } finally {
+        setNoteLoadingIds((previous) => {
+          const next = new Set(previous)
+          next.delete(numericId)
+          return next
+        })
+      }
+    },
+    [fetchSourceNote, sourceNotes],
+  )
+
+  const handleRefreshSourceNote = useCallback(
+    async (source) => {
+      if (!source?.id) return
+      const numericId = Number(source.id)
+      if (!Number.isInteger(numericId) || numericId <= 0) return
+      setPendingStarIds((previous) => {
+        const next = new Set(previous)
+        next.add(numericId)
+        return next
+      })
+      setNoteLoadingIds((previous) => {
+        const next = new Set(previous)
+        next.add(numericId)
+        return next
+      })
+      try {
+        const resp = await starSource(numericId)
+        const note = resp?.note || null
+        const starredAt = resp?.starredAt || new Date().toISOString()
+        setSources((previous) =>
+          previous.map((item) =>
+            Number(item.id) === numericId
+              ? { ...item, starred: true, starredAt }
+              : item,
+          ),
+        )
+        if (note && Array.isArray(note.points)) {
+          setSourceNotes((previous) => {
+            const next = new Map(previous)
+            next.set(numericId, note)
+            return next
+          })
+        }
+        setStatusMessage('Talking points refreshed for this source.')
+      } catch (err) {
+        console.error('Failed to refresh source note', err)
+        setStatusMessage(err.message || 'Failed to regenerate talking points.')
+      } finally {
+        setPendingStarIds((previous) => {
+          const next = new Set(previous)
+          next.delete(numericId)
+          return next
+        })
+        setNoteLoadingIds((previous) => {
+          const next = new Set(previous)
+          next.delete(numericId)
+          return next
+        })
+      }
+    },
+    [starSource],
+  )
 
 
   const handleViewChange = (view) => {
@@ -1351,6 +1554,58 @@ function App() {
     return { ok: true, savedCount }
   }, [briefing, handleSaveGeneratedPoint, isGeneratedPointSaved])
 
+  const handleSaveNotePoint = useCallback(
+    async (sourceId, notePoint) => {
+      if (!notePoint || typeof notePoint !== 'object') {
+        return { ok: false, error: 'Invalid note point' }
+      }
+      const converted = {
+        title: notePoint.hook || notePoint.title || 'New talking point',
+        type: notePoint.type || 'Article',
+        insight: notePoint.insight || '',
+        implication: notePoint.implication || '',
+        url: notePoint.url || '',
+        supportingFacts: Array.isArray(notePoint.supportingFacts)
+          ? notePoint.supportingFacts.filter(Boolean)
+          : [],
+        sourceId: notePoint.sourceId || sourceId || null,
+      }
+      if (!converted.url && sourceId) {
+        const match = sources.find((item) => Number(item.id) === Number(sourceId))
+        if (match?.url) {
+          converted.url = match.url
+        }
+      }
+      const tags = Array.isArray(notePoint.tags) ? notePoint.tags : []
+      return handleSaveGeneratedPoint(converted, { tags, force: true })
+    },
+    [handleSaveGeneratedPoint, sources],
+  )
+
+  const handleSaveAllNotePoints = useCallback(
+    async (sourceId, notePoints = []) => {
+      if (!Array.isArray(notePoints) || notePoints.length === 0) {
+        return { ok: false, error: 'No note points available' }
+      }
+      let savedCount = 0
+      // eslint-disable-next-line no-restricted-syntax
+      for (const point of notePoints) {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await handleSaveNotePoint(sourceId, point)
+        if (result.ok && !result.skipped) {
+          savedCount += 1
+        }
+      }
+      if (savedCount > 0) {
+        setStatusMessage(
+          `Saved ${savedCount} talking point${savedCount === 1 ? '' : 's'} from this source.`,
+        )
+      }
+      return { ok: true, savedCount }
+    },
+    [handleSaveNotePoint],
+  )
+
   const handleUpdateSavedPoint = useCallback(
     async (id, updates = {}) => {
       const numericId = Number(id)
@@ -1519,82 +1774,17 @@ function App() {
 
   const handleViewSourceDetail = useCallback(
     async (source) => {
+      // This handler is kept for compatibility but no longer opens a drawer
+      // The enriched content will be shown inline when the row is expanded
       if (!source?.id) return
       const numericId = Number(source.id)
       if (!Number.isInteger(numericId) || numericId <= 0) return
 
-      setActiveSourceId(numericId)
-      setIsSourceDrawerOpen(true)
-
-      const cache = evidenceCacheRef.current
-      const currentDetail = cache.get(numericId)
-      if (currentDetail?.hasContent) {
-        setSourceDrawerStatus(
-          currentDetail.enrichedAt
-            ? `Cached ${new Date(currentDetail.enrichedAt).toLocaleString()}`
-            : 'Content cached.',
-        )
-        return
-      }
-
-      setIsSourceDetailLoading(true)
-      setSourceDrawerStatus(currentDetail ? 'Fetching latest content…' : 'Pulling full content…')
-      try {
-        const forceFetch = currentDetail ? !currentDetail.hasContent : false
-        await ensureSourceDetails([numericId], { force: forceFetch })
-        const updated = cache.get(numericId)
-        if (updated?.hasContent) {
-          setSourceDrawerStatus(
-            updated.enrichedAt
-              ? `Cached ${new Date(updated.enrichedAt).toLocaleString()}`
-              : 'Content cached.',
-          )
-        } else {
-          setSourceDrawerStatus('Full content not cached yet. Use the fetch button to try again.')
-        }
-      } catch (err) {
-        console.error('Failed to load source detail', err)
-        setSourceDrawerStatus(err.message || 'Failed to load full content.')
-      } finally {
-        setIsSourceDetailLoading(false)
-      }
+      // Ensure enriched content is available
+      await ensureSourceDetails([numericId], { force: false })
     },
     [ensureSourceDetails],
   )
-
-  const handleCloseSourceDetail = useCallback(() => {
-    setIsSourceDrawerOpen(false)
-    setSourceDrawerStatus('')
-    setIsSourceDetailLoading(false)
-    setActiveSourceId(null)
-  }, [])
-
-  const handleFetchSourceFullContent = useCallback(async () => {
-    if (!activeSourceId) return
-    const numericId = Number(activeSourceId)
-    if (!Number.isInteger(numericId) || numericId <= 0) return
-
-    setIsSourceDetailLoading(true)
-    setSourceDrawerStatus('Fetching full content…')
-    try {
-      await ensureSourceDetails([numericId], { force: true })
-      const updated = evidenceCacheRef.current.get(numericId)
-      if (updated?.hasContent) {
-        setSourceDrawerStatus(
-          updated.enrichedAt
-            ? `Cached ${new Date(updated.enrichedAt).toLocaleString()}`
-            : 'Content cached.',
-        )
-      } else {
-        setSourceDrawerStatus('Unable to retrieve full content for this source.')
-      }
-    } catch (err) {
-      console.error('Failed to fetch full content', err)
-      setSourceDrawerStatus(err.message || 'Failed to fetch full content.')
-    } finally {
-      setIsSourceDetailLoading(false)
-    }
-  }, [activeSourceId, ensureSourceDetails])
 
 
   const handleTogglePinPoint = useCallback((point) => {
@@ -1630,11 +1820,6 @@ function App() {
   const displayedSources = useMemo(() =>
     sources.map((s) => ({ ...s, selected: s.selected || selectedUrlSet.has(s.url) })),
   [sources, selectedUrlSet])
-  const activeSource = useMemo(() => {
-    if (!activeSourceId) return null
-    return displayedSources.find((item) => Number(item.id) === Number(activeSourceId)) || null
-  }, [activeSourceId, displayedSources])
-  const activeSourceDetail = activeSourceId ? enrichedEvidence[activeSourceId] || null : null
   const evidenceSources = useMemo(
     () =>
       displayedSources
@@ -1813,10 +1998,17 @@ function App() {
                 onUpdateDatabase={handleIngestToLibrary}
                 onRemoveSource={handleRemoveSource}
                 onViewSource={handleViewSourceDetail}
+                onToggleStar={handleToggleStarSource}
+                onToggleHide={handleToggleHideSource}
                 isFetching={isFetching}
                 isIngesting={isIngesting}
                 isRunningAi={isAiBusy}
                 hasEnabledSource={hasEnabledSource}
+                pendingStarIds={pendingStarIds}
+                pendingHideIds={pendingHideIds}
+                sourceNotes={sourceNotes}
+                noteLoadingIds={noteLoadingIds}
+                enrichedContent={enrichedEvidence}
               />
             </div>
           )}
@@ -1838,15 +2030,6 @@ function App() {
         onClose={handleCloseEvidence}
         sources={evidenceSources}
         statusMessage={evidenceDrawerMessage}
-      />
-      <SourceDetailDrawer
-        open={activeView === 'sources' && isSourceDrawerOpen && Boolean(activeSource)}
-        onClose={handleCloseSourceDetail}
-        source={activeSource}
-        detail={activeSourceDetail}
-        statusMessage={sourceDrawerStatus}
-        onFetchFullContent={handleFetchSourceFullContent}
-        isFetching={isSourceDetailLoading}
       />
     </div>
   )

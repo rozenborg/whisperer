@@ -159,3 +159,28 @@ export async function listSources({ startDate, endDate, sinceDays = 14, limit = 
 export async function deleteSource(id) {
   return del(`/api/sources/${encodeURIComponent(id)}`)
 }
+
+export async function starSource(id) {
+  if (!id) throw new Error('id required')
+  return post(`/api/sources/${encodeURIComponent(id)}/star`)
+}
+
+export async function unstarSource(id) {
+  if (!id) throw new Error('id required')
+  return del(`/api/sources/${encodeURIComponent(id)}/star`)
+}
+
+export async function fetchSourceNote(id) {
+  if (!id) throw new Error('id required')
+  return get(`/api/sources/${encodeURIComponent(id)}/note`)
+}
+
+export async function hideSource(id) {
+  if (!id) throw new Error('id required')
+  return post(`/api/sources/${encodeURIComponent(id)}/hide`)
+}
+
+export async function unhideSource(id) {
+  if (!id) throw new Error('id required')
+  return del(`/api/sources/${encodeURIComponent(id)}/hide`)
+}
